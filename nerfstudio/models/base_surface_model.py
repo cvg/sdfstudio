@@ -411,8 +411,8 @@ class SurfaceModel(Model):
                 l1_loss, free_space_loss, sdf_loss = self.sensor_depth_loss(batch, outputs)
 
                 loss_dict["sensor_l1_loss"] = l1_loss * self.config.sensor_depth_l1_loss_mult
-                loss_dict["sensor_freespace_loss"] = free_space_loss * self.config.sensor_depth_freespace_loss_mult
-                loss_dict["sensor_sdf_loss"] = sdf_loss * self.config.sensor_depth_sdf_loss_mult
+                # loss_dict["sensor_freespace_loss"] = free_space_loss * self.config.sensor_depth_freespace_loss_mult
+                # loss_dict["sensor_sdf_loss"] = sdf_loss * self.config.sensor_depth_sdf_loss_mult
 
             # multi-view photoconsistency loss as Geo-NeuS
             if "patches" in outputs and self.config.patch_warp_loss_mult > 0.0:
