@@ -133,10 +133,15 @@ def get_path_from_json(camera_path: Dict[str, Any]) -> Cameras:
         c2w = torch.tensor(camera["camera_to_world"]).view(4, 4)[:3]
         c2ws.append(c2w)
         # field of view
-        fov = camera["fov"]
-        focal_length = three_js_perspective_camera_focal_length(fov, image_height)
-        fxs.append(focal_length)
-        fys.append(focal_length)
+        if "fov" in camera:
+            fov = camera["fov"]
+            focal_length = three_js_perspective_camera_focal_length(fov, image_height)
+            fxs.append(focal_length)
+            fys.append(focal_length)
+        else:
+            assert "fx" in camera and "fy" in camera
+            fxs.append(camera["fx"])
+            fys.append(camera["fy"])
 
     camera_to_worlds = torch.stack(c2ws, dim=0)
     fx = torch.tensor(fxs)

@@ -82,7 +82,10 @@ def _render_trajectory_video(
                     CONSOLE.print(f"Could not find {rendered_output_name} in the model outputs", justify="center")
                     CONSOLE.print(f"Please set --rendered_output_name to one of: {outputs.keys()}", justify="center")
                     sys.exit(1)
-                output_image = outputs[rendered_output_name].cpu().numpy()
+                if rendered_output_name == "semantics":
+                    output_image = torch.argmax(outputs[rendered_output_name], dim=-1).cpu().numpy().astype(np.uint8)
+                else:
+                    output_image = outputs[rendered_output_name].cpu().numpy()
                 render_image.append(output_image)
             render_image = np.concatenate(render_image, axis=1)
             if output_format == "images":
