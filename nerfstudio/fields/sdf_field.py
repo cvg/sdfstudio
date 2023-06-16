@@ -29,13 +29,14 @@ from torchtyping import TensorType
 from typing_extensions import Literal
 
 from nerfstudio.cameras.rays import RaySamples
+from nerfstudio.field_components.mlp import MLP
 from nerfstudio.field_components.embedding import Embedding
 from nerfstudio.field_components.encodings import (
     NeRFEncoding,
     PeriodicVolumeEncoding,
     TensorVMEncoding,
 )
-from nerfstudio.field_components.field_heads import FieldHeadNames
+from nerfstudio.field_components.field_heads import FieldHeadNames, SemanticFieldHead
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, FieldConfig
 
@@ -167,6 +168,10 @@ class SDFFieldConfig(FieldConfig):
     """Padding added to the RGB outputs"""
     off_axis: bool = False
     """whether to use off axis encoding from mipnerf360"""
+    semantic_num_layers: int = 4
+    """Number of layers for semantic head."""
+    semantic_layer_width: int = 256
+    """Number of hidden dimension of semantic head."""
 
 
 class SDFField(Field):
@@ -184,10 +189,13 @@ class SDFField(Field):
         aabb,
         num_images: int,
         use_average_appearance_embedding: bool = False,
+        add_semantics: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
+        num_semantic_classes: Optional[int] = None,
     ) -> None:
         super().__init__()
         self.config = config
+        self.add_semantics = add_semantics
 
         # TODO do we need aabb here?
         self.aabb = Parameter(aabb, requires_grad=False)
@@ -346,6 +354,18 @@ class SDFField(Field):
         self.sigmoid = torch.nn.Sigmoid()
 
         self._cos_anneal_ratio = 1.0
+
+        if self.add_semantics:
+            # semantic head
+            self.num_semantic_classes = num_semantic_classes
+            self.mlp_semantics = MLP(
+                in_dim=self.config.geo_feat_dim,
+                layer_width=self.config.semantic_layer_width,
+                num_layers=self.config.semantic_num_layers,
+                activation=nn.ReLU(),
+                out_activation=nn.ReLU(),
+            )
+            self.field_head_semantics = SemanticFieldHead(in_dim=self.mlp_semantics.get_out_dim(), num_classes=self.num_semantic_classes)
 
     def set_cos_anneal_ratio(self, anneal: float) -> None:
         """Set the anneal value for the proposal network."""
@@ -547,6 +567,20 @@ class SDFField(Field):
 
         return rgb
 
+    def get_semantics(self, points, geo_features):
+        """compute semantics"""
+
+        # TODO may detach geo_features from gradient, but in CVPR paper it was beneficial to keep it
+
+        # same as in nerfacto_field
+        semantics_input = [
+            geo_features.view(-1, self.config.geo_feat_dim),
+        ]
+
+        semantics_input = torch.cat(semantics_input, dim=-1)
+        x = self.mlp_semantics(semantics_input)
+        return x
+
     def get_outputs(self, ray_samples: RaySamples, return_alphas=False, return_occupancy=False):
         """compute output of ray samples"""
         if ray_samples.camera_indices is None:
@@ -596,6 +630,13 @@ class SDFField(Field):
                 "points_norm": points_norm,
             }
         )
+        if self.add_semantics:
+            semantics = self.get_semantics(inputs, geo_feature)
+            semantics = semantics.view(*ray_samples.frustums.directions.shape[:-1], -1)
+            # like in nr4seg and panoptic lifting, we normlize before accumulation
+            sem_head = self.field_head_semantics(semantics)
+            sem_head = torch.nn.functional.softmax(sem_head, dim=-1)
+            outputs.update({FieldHeadNames.SEMANTICS: sem_head})
 
         if return_alphas:
             # TODO use mid point sdf for NeuS

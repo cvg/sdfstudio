@@ -122,6 +122,7 @@ class NeuSAccModel(NeuSModel):
             # the rendered depth is point-to-point distance and we should convert to depth
             depth = depth / ray_bundle.directions_norm
 
+
             outputs = {
                 "rgb": rgb,
                 "accumulation": accumulation,
@@ -129,12 +130,21 @@ class NeuSAccModel(NeuSModel):
                 "normal": normal,
             }
 
+            if FieldHeadNames.SEMANTICS in field_outputs:
+                semantics = nerfacc.accumulate_along_rays(
+                    weights.detach(),
+                    ray_indices.detach(),
+                    values=field_outputs[FieldHeadNames.SEMANTICS],
+                    n_rays=n_rays
+                )
+                outputs["semantics"] = semantics
+
             if self.training:
                 grad_points = field_outputs[FieldHeadNames.GRADIENT]
                 outputs.update({"eik_grad": grad_points})
         else:
             zeros = torch.zeros((ray_bundle.shape[0], 3), dtype=torch.float32, device=self.device)
-            outputs = {"rgb": zeros, "accumulation": zeros[:, :1], "depth": zeros[:, :1], "normal": zeros}
+            outputs = {"rgb": zeros, "accumulation": zeros[:, :1], "depth": zeros[:, :1], "normal": zeros, "semantics": zeros[:, :1]}
             if self.training:
                 outputs.update({"eik_grad": zeros})
 

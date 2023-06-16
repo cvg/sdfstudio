@@ -31,6 +31,7 @@ from nerfstudio.data.dataparsers.base_dataparser import (
     DataParser,
     DataParserConfig,
     DataparserOutputs,
+    Semantics,
 )
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.utils.images import BasicImages
@@ -104,6 +105,25 @@ def get_sensor_depths(image_idx: int, sensor_depths):
 
     return {"sensor_depth": sensor_depth}
 
+def get_semantics(image_idx: int, semantics):
+    """function to process semantic labels
+
+    Args:
+        image_idx: specific image index to work with
+        semantics: semantics data
+    """
+
+    # semantics
+    semantic = semantics[image_idx]
+    # make groups per included class (better would be per instance if availabel)
+    groups = torch.zeros_like(semantic)
+    for i, class_id in enumerate(semantic.unique()):
+        groups[semantic == class_id] = i
+    groups = groups.type(torch.uint8)
+
+    return {"semantics": semantic, "semantic_groups": groups}
+    #return {"semantics": semantic}
+
 
 def get_foreground_masks(image_idx: int, fg_masks):
     """function to process additional foreground_masks
@@ -148,6 +168,8 @@ class SDFStudioDataParserConfig(DataParserConfig):
     include_foreground_mask: bool = False
     """whether or not to load foreground mask"""
     include_sfm_points: bool = False
+    """whether or not to load semantic labels"""
+    include_semantics: bool = False
     """whether or not to load sfm points"""
     downscale_factor: int = 1
     scene_scale: float = 2.0
@@ -160,7 +182,7 @@ class SDFStudioDataParserConfig(DataParserConfig):
     neighbors_num: Optional[int] = None
     neighbors_shuffle: Optional[bool] = False
     pairs_sorted_ascending: Optional[bool] = True
-    """if src image pairs are sorted in ascending order by similarity i.e. 
+    """if src image pairs are sorted in ascending order by similarity i.e.
     the last element is the most similar to the first (ref)"""
     skip_every_for_val_split: int = 1
     """sub sampling validation images"""
@@ -193,6 +215,8 @@ class SDFStudio(DataParser):
         normal_images = []
         sensor_depth_images = []
         foreground_mask_images = []
+        semantic_labels = []
+        semantic_filenames = []
         sfm_points = []
         fx = []
         fy = []
@@ -256,6 +280,14 @@ class SDFStudio(DataParser):
                 # load sparse sfm points
                 sfm_points_view = np.loadtxt(self.config.data / frame["sfm_sparse_points_view"])
                 sfm_points.append(torch.from_numpy(sfm_points_view).float())
+
+            if self.config.include_semantics:
+                assert meta["has_semantics"]
+                # load semantic labels
+                filepath = str(self.config.data / frame["label_path"])
+                semantic_filenames.append(filepath)
+                semantic_label = np.array(Image.open(filepath), dtype="uint8")
+                semantic_labels.append(torch.from_numpy(semantic_label))
 
         fx = torch.stack(fx)
         fy = torch.stack(fy)
@@ -360,6 +392,18 @@ class SDFStudio(DataParser):
                 },
             }
 
+        # additionally load semantic labels in same format as friends
+        if self.config.include_semantics:
+            classes = [x['name'] for x in meta["semantic_classes"]]
+            colors = [x['color'] for x in meta["semantic_classes"]]
+            colors = torch.tensor(colors, dtype=torch.float32) / 255.0
+            semantics = Semantics(filenames=semantic_filenames, classes=classes, colors=colors)
+
+            additional_inputs_dict["semantics"] = {
+                "func": get_semantics,
+                "kwargs": {"semantics": semantic_labels},
+            }
+
         dataparser_outputs = DataparserOutputs(
             image_filenames=image_filenames,
             cameras=cameras,
@@ -367,5 +411,6 @@ class SDFStudio(DataParser):
             additional_inputs=additional_inputs_dict,
             depths=depth_images,
             normals=normal_images,
+            metadata={'semantics': semantics} if self.config.include_semantics else {},
         )
         return dataparser_outputs
