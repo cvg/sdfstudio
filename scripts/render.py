@@ -70,6 +70,8 @@ def _render_trajectory_video(
     output_image_dir = output_filename.parent / output_filename.stem
     if output_format == "images":
         output_image_dir.mkdir(parents=True, exist_ok=True)
+    else:
+        install_checks.check_ffmpeg_installed()
     with progress:
         for camera_idx in progress.track(range(cameras.size), description=""):
             camera_ray_bundle = cameras.generate_rays(camera_indices=camera_idx)
@@ -134,7 +136,6 @@ class RenderTrajectory:
             test_mode="test" if self.traj == "spiral" else "inference",
         )
 
-        install_checks.check_ffmpeg_installed()
 
         seconds = self.seconds
 
