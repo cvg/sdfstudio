@@ -163,7 +163,7 @@ class Model(nn.Module):
         """
 
     @torch.no_grad()
-    def get_outputs_for_camera_ray_bundle(self, camera_ray_bundle: RayBundle) -> Dict[str, torch.Tensor]:
+    def get_outputs_for_camera_ray_bundle(self, camera_ray_bundle: RayBundle, reshape=True) -> Dict[str, torch.Tensor]:
         """Takes in camera parameters and computes the output of the model.
 
         Args:
@@ -184,8 +184,12 @@ class Model(nn.Module):
         for output_name, outputs_list in outputs_lists.items():
             if not torch.is_tensor(outputs_list[0]):
                 # TODO: handle lists of tensors as well
+                outputs[output_name] = outputs_list  # type: ignore
                 continue
-            outputs[output_name] = torch.cat(outputs_list).view(image_height, image_width, -1)  # type: ignore
+            if reshape:
+                outputs[output_name] = torch.cat(outputs_list).view(image_height, image_width, -1)  # type: ignore
+            else:
+                outputs[output_name] = torch.cat(outputs_list)
         return outputs
 
     @abstractmethod

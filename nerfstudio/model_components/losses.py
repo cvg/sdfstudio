@@ -591,28 +591,29 @@ class SensorDepthLoss(nn.Module):
 
         l1_loss = torch.sum(valid_gt_mask * torch.abs(depth_gt - depth_pred)) / (valid_gt_mask.sum() + 1e-6)
 
-        # # free space loss and sdf loss
-        # ray_samples = outputs["ray_samples"]
-        # filed_outputs = outputs["field_outputs"]
-        # pred_sdf = filed_outputs[FieldHeadNames.SDF][..., 0]
-        # directions_norm = outputs["directions_norm"]
+        # free space loss and sdf loss
+        if "ray_samples" not in outputs:
+            print(outputs.keys())
+        ray_samples = outputs["ray_samples"]
+        pred_sdf = outputs["sdf"]
+        directions_norm = outputs["directions_norm"]
 
-        # z_vals = ray_samples.frustums.starts[..., 0] / directions_norm
+        z_vals = ray_samples.frustums.starts[..., 0] / directions_norm
 
-        # truncation = self.truncation
-        # front_mask = valid_gt_mask & (z_vals < (depth_gt - truncation))
-        # back_mask = valid_gt_mask & (z_vals > (depth_gt + truncation))
-        # sdf_mask = valid_gt_mask & (~front_mask) & (~back_mask)
+        truncation = self.truncation
+        front_mask = valid_gt_mask & (z_vals < (depth_gt - truncation))
+        back_mask = valid_gt_mask & (z_vals > (depth_gt + truncation))
+        sdf_mask = valid_gt_mask & (~front_mask) & (~back_mask)
 
-        # num_fs_samples = front_mask.sum()
-        # num_sdf_samples = sdf_mask.sum()
-        # num_samples = num_fs_samples + num_sdf_samples + 1e-6
-        # fs_weight = 1.0 - num_fs_samples / num_samples
-        # sdf_weight = 1.0 - num_sdf_samples / num_samples
+        num_fs_samples = front_mask.sum()
+        num_sdf_samples = sdf_mask.sum()
+        num_samples = num_fs_samples + num_sdf_samples + 1e-6
+        fs_weight = 1.0 - num_fs_samples / num_samples
+        sdf_weight = 1.0 - num_sdf_samples / num_samples
 
-        # free_space_loss = torch.mean((F.relu(truncation - pred_sdf) * front_mask) ** 2) * fs_weight
+        free_space_loss = torch.mean((F.relu(truncation - pred_sdf) * front_mask) ** 2) * fs_weight
 
-        # sdf_loss = torch.mean(((z_vals + pred_sdf) - depth_gt) ** 2 * sdf_mask) * sdf_weight
+        sdf_loss = torch.mean(((z_vals + pred_sdf) - depth_gt) ** 2 * sdf_mask) * sdf_weight
 
-        # return l1_loss, free_space_loss, sdf_loss
-        return l1_loss, None, None
+        return l1_loss, free_space_loss, sdf_loss
+        # return l1_loss, free_space_loss, None

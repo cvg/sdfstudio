@@ -38,6 +38,8 @@ class Semantics:
     """filenames to load semantic data"""
     classes: List[str]
     """class labels for data"""
+    histogram: List[float]
+    """relative class occurance in dataset"""
     colors: torch.Tensor
     """color mapping for classes"""
     mask_classes: List[str] = field(default_factory=lambda: [])
