@@ -405,8 +405,8 @@ class VanillaPipeline(Pipeline):
                 # downsample by factor of 4 to speed up
                 camera_ray_bundle = camera_ray_bundle[::sub_sample_factor, ::sub_sample_factor]
                 height, width = camera_ray_bundle.shape
-                outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-                ray_points = outputs["ray_points"].reshape(height, width, -1, 3)
+                outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle, reshape=False)
+                ray_points = outputs["ray_points"].reshape(-1, 3)
                 weights = outputs["weights"]
 
                 valid_points = ray_points.reshape(-1, 3)[weights.reshape(-1) > valid_points_thres]
