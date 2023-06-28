@@ -347,10 +347,6 @@ class SurfaceModel(Model):
             "depth": depth,
             "normal": normal,
             "weights": weights,
-            "ray_points": self.scene_contraction(
-                ray_samples.frustums.get_start_positions()
-            ),  # used for creating visiblity mask
-            "directions_norm": ray_bundle.directions_norm,  # used to scale z_vals for free space and sdf loss
         }
         outputs.update(bg_outputs)
         if FieldHeadNames.SEMANTICS in field_outputs:
@@ -361,13 +357,25 @@ class SurfaceModel(Model):
         if self.training:
             grad_points = field_outputs[FieldHeadNames.GRADIENT]
             points_norm = field_outputs["points_norm"]
-            outputs.update({"eik_grad": grad_points, "points_norm": points_norm})
+            outputs.update({
+                "eik_grad": grad_points,
+                "points_norm": points_norm,
+                "directions_norm": ray_bundle.directions_norm,  # used to scale z_vals for free space and sdf loss
+                "ray_samples": ray_samples,
+                "sdf": field_outputs[FieldHeadNames.SDF][..., 0],
+            })
 
             # TODO volsdf use different point set for eikonal loss
             # grad_points = self.field.gradient(eik_points)
             # outputs.update({"eik_grad": grad_points})
 
-            outputs.update(samples_and_field_outputs)
+            # outputs.update(samples_and_field_outputs)
+        else:
+            outputs.update({
+                "ray_points": self.scene_contraction(
+                    ray_samples.frustums.get_start_positions()
+                ),  # used for creating visiblity mask
+            })
 
         # TODO how can we move it to neus_facto without out of memory
         if "weights_list" in samples_and_field_outputs:
@@ -461,8 +469,8 @@ class SurfaceModel(Model):
                 l1_loss, free_space_loss, sdf_loss = self.sensor_depth_loss(batch, outputs)
 
                 loss_dict["sensor_l1_loss"] = l1_loss * self.config.sensor_depth_l1_loss_mult
-                # loss_dict["sensor_freespace_loss"] = free_space_loss * self.config.sensor_depth_freespace_loss_mult
-                # loss_dict["sensor_sdf_loss"] = sdf_loss * self.config.sensor_depth_sdf_loss_mult
+                loss_dict["sensor_freespace_loss"] = free_space_loss * self.config.sensor_depth_freespace_loss_mult
+                loss_dict["sensor_sdf_loss"] = sdf_loss * self.config.sensor_depth_sdf_loss_mult
 
             # semantic loss
             if "semantics" in batch:
@@ -573,13 +581,6 @@ class SurfaceModel(Model):
             "normal": combined_normal,
         }
 
-        if "sensor_depth" in batch:
-            sensor_depth = batch["sensor_depth"]
-            depth_pred = outputs["depth"]
-
-            combined_sensor_depth = torch.cat([sensor_depth[..., None], depth_pred], dim=1)
-            combined_sensor_depth = colormaps.apply_depth_colormap(combined_sensor_depth)
-            images_dict["sensor_depth"] = combined_sensor_depth
 
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
         image = torch.moveaxis(image, -1, 0)[None, ...]
@@ -592,6 +593,17 @@ class SurfaceModel(Model):
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
         #metrics_dict["lpips"] = float(lpips)
+
+        if "sensor_depth" in batch:
+            sensor_depth = batch["sensor_depth"]
+            depth_pred = outputs["depth"]
+
+            combined_sensor_depth = torch.cat([sensor_depth[..., None], depth_pred], dim=1)
+            combined_sensor_depth = colormaps.apply_depth_colormap(combined_sensor_depth)
+            images_dict["sensor_depth"] = combined_sensor_depth
+            sensor_depth = sensor_depth.to(self.device)
+            valid_mask = sensor_depth > 0.0
+            metrics_dict["sensor_depth_l1"] = torch.sum(valid_mask * torch.abs(sensor_depth - depth_pred)) / torch.sum(valid_mask + 1e-6)
 
         if "semantics" in batch:
             label = self.semantics_output2model[batch["semantics"].long()].to(self.device)

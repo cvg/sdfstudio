@@ -93,6 +93,7 @@ class NeuSAccModel(NeuSModel):
         if self.sampler._update_counter.item() <= 0:
             return super().get_outputs(ray_bundle)
 
+
         ray_samples, ray_indices = self.sampler(ray_bundle, sdf_fn=self.field.get_sdf, alpha_fn=self.field.get_alpha)
 
         if ray_samples.shape[0] > 0:
@@ -126,6 +127,7 @@ class NeuSAccModel(NeuSModel):
             outputs = {
                 "rgb": rgb,
                 "accumulation": accumulation,
+                "ray_samples": ray_samples,
                 "depth": depth,
                 "normal": normal,
             }
@@ -141,7 +143,17 @@ class NeuSAccModel(NeuSModel):
 
             if self.training:
                 grad_points = field_outputs[FieldHeadNames.GRADIENT]
-                outputs.update({"eik_grad": grad_points})
+                outputs.update({
+                    "eik_grad": grad_points,
+                    "directions_norm": ray_bundle.directions_norm,  # used to scale z_vals for free space and sdf loss
+                    "sdf": field_outputs[FieldHeadNames.SDF][..., 0],
+                })
+            else:
+                # for visibility mask
+                outputs.update({
+                    "ray_points": self.scene_contraction(ray_samples.frustums.get_start_positions()),
+                    "weights": weights,
+                })
         else:
             zeros = torch.zeros((ray_bundle.shape[0], 3), dtype=torch.float32, device=self.device)
             outputs = {"rgb": zeros, "accumulation": zeros[:, :1], "depth": zeros[:, :1], "normal": zeros, "semantics": zeros[:, :1]}
