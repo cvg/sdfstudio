@@ -30,6 +30,7 @@ from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from torchtyping import TensorType
 from typing_extensions import Literal
+import numpy as np
 
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.data.dataparsers.base_dataparser import Semantics
@@ -159,6 +160,28 @@ class SurfaceModel(Model):
 
         self.scene_contraction = SceneContraction(order=order)
 
+        #semantics
+        if hasattr(self, 'semantics'):
+            hist = np.array(self.semantics.histogram)
+            # check which classes occur (plus 0 as ignore label), we only use these in the model
+            self.semantics_model2output = np.argwhere(hist > 0).squeeze()
+            if not self.config.semantic_ignore_label in self.semantics_model2output:
+                self.semantics_model2output = torch.cat(
+                    [torch.tensor([self.config.semantic_ignore_label]), torch.tensor(self.semantics_model2output)])
+            else:
+                self.semantics_model2output = torch.tensor(self.semantics_model2output)
+            self.semantics_output2model = torch.zeros(len(self.semantics.classes), dtype=torch.long)
+            self.semantics_output2model[self.semantics_model2output] = torch.arange(
+                self.semantics_model2output.shape[0], dtype=torch.long
+            )
+            self.semantics_numclasses = self.semantics_model2output.shape[0]
+            hist = hist[self.semantics_model2output]
+            hist = torch.tensor(hist / hist.sum()).float()
+            ignore_label = self.semantics_output2model[self.config.semantic_ignore_label]
+            self.semantic_loss = torch.nn.CrossEntropyLoss(
+                weight=(1.0 / (0.1 + hist)), reduction="mean", ignore_index=ignore_label)
+            self.groups_loss = torch.nn.CrossEntropyLoss(reduction="mean")
+
         # Can we also use contraction for sdf?
         # Fields
         self.field = self.config.sdf_field.setup(
@@ -167,7 +190,7 @@ class SurfaceModel(Model):
             num_images=self.num_train_data,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
             add_semantics=self.config.semantic_loss_mult > 0.0,
-            num_semantic_classes=len(self.semantics.classes) if hasattr(self, "semantics") else None,
+            num_semantic_classes=self.semantics_numclasses if hasattr(self, "semantics") else None,
         )
 
         # Collider
@@ -236,16 +259,15 @@ class SurfaceModel(Model):
             patch_size=self.config.patch_size, topk=self.config.topk, min_patch_variance=self.config.min_patch_variance
         )
         self.sensor_depth_loss = SensorDepthLoss(truncation=self.config.sensor_depth_truncation)
-        self.semantic_loss = torch.nn.CrossEntropyLoss(
-            reduction="mean", ignore_index=self.config.semantic_ignore_label)
+
 
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity()
         if hasattr(self, 'semantics'):
-            self.sem_accuracy = Accuracy(task='multiclass', num_classes=len(self.semantics.classes))
-            self.sem_miou = JaccardIndex(task='multiclass', num_classes=len(self.semantics.classes))
+            self.sem_accuracy = Accuracy(task='multiclass', num_classes=self.semantics_numclasses)
+            self.sem_miou = JaccardIndex(task='multiclass', num_classes=self.semantics_numclasses)
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -444,11 +466,11 @@ class SurfaceModel(Model):
 
             # semantic loss
             if "semantics" in batch:
-                label = batch["semantics"].to(self.device)
+                label = self.semantics_output2model[batch["semantics"].long()].to(self.device)
                 semantics_pred = outputs["semantics"]
                 if self.config.semantic_loss_mult > 0.0:
                     loss_dict["semantic_loss"] = (
-                        self.semantic_loss(semantics_pred, label.long()) * self.config.semantic_loss_mult
+                        self.semantic_loss(semantics_pred, label) * self.config.semantic_loss_mult
                     )
                 reached_min_step_for_patch_loss = True
                 if self.config.semantic_patch_loss_min_step > 0:
@@ -458,17 +480,20 @@ class SurfaceModel(Model):
                 if self.config.semantic_patch_loss_mult > 0.0 and reached_min_step_for_patch_loss:
                     # patch consistency as in panoptic lifting
                     groups = batch["semantic_groups"].to(self.device)[:, None].long()
-                    target_means = torch.zeros((50, semantics_pred.shape[-1]), device=self.device)
+                    target_means = torch.zeros((255, semantics_pred.shape[-1]), device=self.device)
                     target_means = target_means.scatter_reduce(
                         dim=0,
                         index=torch.tile(groups, (1, len(self.semantics.classes))),
-                        src=torch.nn.functional.softmax(semantics_pred, -1),
+                        src=semantics_pred,
                         reduce="mean",
                         include_self=False,
                     )
                     target = target_means.argmax(-1)[groups[:, 0]]
+
+                    # ramp up loss multiplier
+                    loss_mult = self.config.semantic_patch_loss_mult * (step - self.config.semantic_patch_loss_min_step) / 5000.0
                     loss_dict["semantic_patch_loss"] = (
-                        self.semantic_loss(semantics_pred, target) * self.config.semantic_patch_loss_mult
+                        self.groups_loss(semantics_pred, target) * loss_mult
                     )
 
             # multi-view photoconsistency loss as Geo-NeuS
@@ -569,10 +594,11 @@ class SurfaceModel(Model):
         #metrics_dict["lpips"] = float(lpips)
 
         if "semantics" in batch:
-            pred = torch.argmax(F.softmax(outputs["semantics"], dim=-1), dim=-1)
-            images_dict["semantics_colormap"] = self.semantics.colors[pred]
-            # images_dict["semantics_colormap"] = torch.gather(self.semantics.colors, 0, pred[..., None])
-            label = batch["semantics"].to(self.device)
+            label = self.semantics_output2model[batch["semantics"].long()].to(self.device)
+            pred = torch.argmax(outputs["semantics"], dim=-1)
+            colorized_pred = self.semantics.colors[pred]
+            colorized_label = self.semantics.colors[label.long()]
+            images_dict["semantics"] = torch.cat([colorized_label, colorized_pred], dim=1)
             metrics_dict["semantics_acc"] = self.sem_accuracy(pred, label)
             metrics_dict["semantics_miou"] = self.sem_miou(pred, label)
 

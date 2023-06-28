@@ -105,7 +105,7 @@ def get_sensor_depths(image_idx: int, sensor_depths):
 
     return {"sensor_depth": sensor_depth}
 
-def get_semantics(image_idx: int, semantics):
+def get_semantics(image_idx: int, semantic_path, group_path):
     """function to process semantic labels
 
     Args:
@@ -114,11 +114,15 @@ def get_semantics(image_idx: int, semantics):
     """
 
     # semantics
-    semantic = semantics[image_idx]
-    # make groups per included class (better would be per instance if availabel)
-    groups = torch.zeros_like(semantic)
-    for i, class_id in enumerate(semantic.unique()):
-        groups[semantic == class_id] = i
+    semantic = np.array(Image.open(semantic_path[image_idx]), dtype="uint8")
+    semantic = torch.from_numpy(semantic).type(torch.uint8)
+    # groups for patch loss
+    groups_raw = np.array(Image.open(group_path[image_idx]), dtype="uint8")
+    groups_raw = torch.from_numpy(groups_raw).type(torch.uint8)
+    # make sure groups are unique and start from 0
+    groups = torch.zeros_like(groups_raw)
+    for i, group_id in enumerate(groups_raw.unique()):
+        groups[groups_raw == group_id] = i
     groups = groups.type(torch.uint8)
 
     return {"semantics": semantic, "semantic_groups": groups}
@@ -215,8 +219,8 @@ class SDFStudio(DataParser):
         normal_images = []
         sensor_depth_images = []
         foreground_mask_images = []
-        semantic_labels = []
         semantic_filenames = []
+        group_filenames = []
         sfm_points = []
         fx = []
         fy = []
@@ -286,8 +290,8 @@ class SDFStudio(DataParser):
                 # load semantic labels
                 filepath = str(self.config.data / frame["label_path"])
                 semantic_filenames.append(filepath)
-                semantic_label = np.array(Image.open(filepath), dtype="uint8")
-                semantic_labels.append(torch.from_numpy(semantic_label))
+                filepath = str(self.config.data / frame["group_path"])
+                group_filenames.append(filepath)
 
         fx = torch.stack(fx)
         fy = torch.stack(fy)
@@ -396,12 +400,13 @@ class SDFStudio(DataParser):
         if self.config.include_semantics:
             classes = [x['name'] for x in meta["semantic_classes"]]
             colors = [x['color'] for x in meta["semantic_classes"]]
+            histogram = meta["semantic_class_histogram"]
             colors = torch.tensor(colors, dtype=torch.float32) / 255.0
-            semantics = Semantics(filenames=semantic_filenames, classes=classes, colors=colors)
+            semantics = Semantics(filenames=semantic_filenames, classes=classes, colors=colors, histogram=histogram)
 
             additional_inputs_dict["semantics"] = {
                 "func": get_semantics,
-                "kwargs": {"semantics": semantic_labels},
+                "kwargs": {"semantic_path": semantic_filenames, "group_path": group_filenames},
             }
 
         dataparser_outputs = DataparserOutputs(
