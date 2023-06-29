@@ -113,7 +113,7 @@ class NeuSFactoModel(NeuSModel):
 
         # update proposal network every iterations
         update_schedule = lambda step: -1
-        
+
         self.proposal_sampler = ProposalNetworkSampler(
             num_nerf_samples_per_ray=self.config.num_neus_samples_per_ray,
             num_proposal_samples_per_ray=self.config.num_proposal_samples_per_ray,
@@ -183,8 +183,8 @@ class NeuSFactoModel(NeuSModel):
         }
         return samples_and_field_outputs
 
-    def get_loss_dict(self, outputs, batch, metrics_dict=None):
-        loss_dict = super().get_loss_dict(outputs, batch, metrics_dict)
+    def get_loss_dict(self, outputs, batch, metrics_dict=None, step=None):
+        loss_dict = super().get_loss_dict(outputs, batch, metrics_dict, step=step)
 
         if self.training:
             loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
