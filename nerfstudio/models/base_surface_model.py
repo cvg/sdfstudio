@@ -369,7 +369,7 @@ class SurfaceModel(Model):
             # grad_points = self.field.gradient(eik_points)
             # outputs.update({"eik_grad": grad_points})
 
-            # outputs.update(samples_and_field_outputs)
+            outputs.update(samples_and_field_outputs)
         else:
             outputs.update({
                 "ray_points": self.scene_contraction(
