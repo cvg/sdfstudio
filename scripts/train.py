@@ -165,6 +165,8 @@ def launch(
         config (Config, optional): config file specifying training regimen.
         timeout (timedelta, optional): timeout of the distributed workers.
     """
+    torch.cuda.synchronize()
+
     assert config is not None
     world_size = num_machines * num_gpus_per_machine
     if world_size <= 1:

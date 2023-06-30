@@ -340,6 +340,7 @@ class Trainer:
             writer.put_scalar(name="Eval Loss", scalar=eval_loss, step=step)
             writer.put_dict(name="Eval Loss Dict", scalar_dict=eval_loss_dict, step=step)
             writer.put_dict(name="Eval Metrics Dict", scalar_dict=eval_metrics_dict, step=step)
+        torch.cuda.empty_cache()
 
         # one eval image
         if step_check(step, self.config.trainer.steps_per_eval_image):
@@ -355,8 +356,11 @@ class Trainer:
             group = "Eval Images"
             for image_name, image in images_dict.items():
                 writer.put_image(name=group + "/" + image_name, image=image, step=step)
+        torch.cuda.empty_cache()
 
         # all eval images
         if step_check(step, self.config.trainer.steps_per_eval_all_images):
             metrics_dict, _ = self.pipeline.get_average_eval_image_metrics(step=step)
             writer.put_dict(name="Eval Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)
+
+        torch.cuda.empty_cache()
