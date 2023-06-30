@@ -633,9 +633,7 @@ class SDFField(Field):
         if self.add_semantics:
             semantics = self.get_semantics(inputs, geo_feature)
             semantics = semantics.view(*ray_samples.frustums.directions.shape[:-1], -1)
-            # like in nr4seg and panoptic lifting, we normlize before accumulation
             sem_head = self.field_head_semantics(semantics)
-            sem_head = torch.nn.functional.softmax(sem_head, dim=-1)
             outputs.update({FieldHeadNames.SEMANTICS: sem_head})
 
         if return_alphas:
