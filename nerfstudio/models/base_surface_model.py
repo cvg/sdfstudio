@@ -601,9 +601,10 @@ class SurfaceModel(Model):
             combined_sensor_depth = torch.cat([sensor_depth[..., None], depth_pred], dim=1)
             combined_sensor_depth = colormaps.apply_depth_colormap(combined_sensor_depth)
             images_dict["sensor_depth"] = combined_sensor_depth
-            sensor_depth = sensor_depth.to(self.device)
+            depth_pred  = depth_pred .to('cpu')
+            sensor_depth = sensor_depth.to('cpu')
             valid_mask = sensor_depth > 0.0
-            metrics_dict["sensor_depth_l1"] = torch.sum(valid_mask * torch.abs(sensor_depth - depth_pred)) / torch.sum(valid_mask + 1e-6)
+            metrics_dict["sensor_depth_l1"] = torch.sum(valid_mask * torch.abs(sensor_depth - depth_pred)) / (torch.sum(valid_mask) + 1e-6)
 
         if "semantics" in batch:
             label = self.semantics_output2model[batch["semantics"].long()].to(self.device)
