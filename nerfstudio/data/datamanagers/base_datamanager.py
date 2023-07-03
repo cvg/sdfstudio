@@ -364,7 +364,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             num_images_to_sample_from=self.config.train_num_images_to_sample_from,
             num_times_to_repeat_images=self.config.train_num_times_to_repeat_images,
             device=self.device,
-            num_workers=self.world_size * 4,
+            num_workers=1,
             pin_memory=True,
             collate_fn=self.config.collate_fn,
         )
@@ -394,7 +394,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             num_images_to_sample_from=self.config.eval_num_images_to_sample_from,
             num_times_to_repeat_images=self.config.eval_num_times_to_repeat_images,
             device=self.device,
-            num_workers=self.world_size * 2,
+            num_workers=1,
             pin_memory=True,
             collate_fn=self.config.collate_fn,
         )
