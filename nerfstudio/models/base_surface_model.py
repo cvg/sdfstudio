@@ -491,7 +491,7 @@ class SurfaceModel(Model):
                     target_means = torch.zeros((255, semantics_pred.shape[-1]), device=self.device)
                     target_means = target_means.scatter_reduce(
                         dim=0,
-                        index=torch.tile(groups, (1, len(self.semantics.classes))),
+                        index=torch.tile(groups, (1, self.semantics_numclasses)),
                         src=semantics_pred,
                         reduce="mean",
                         include_self=False,
