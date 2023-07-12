@@ -72,6 +72,7 @@ def _render_trajectory_video(
         output_image_dir.mkdir(parents=True, exist_ok=True)
     else:
         install_checks.check_ffmpeg_installed()
+    semantics_model2output = pipeline.model.semantics_model2output.copy().cpu()
     with progress:
         for camera_idx in progress.track(range(cameras.size), description=""):
             camera_ray_bundle = cameras.generate_rays(camera_indices=camera_idx)
@@ -85,7 +86,10 @@ def _render_trajectory_video(
                     CONSOLE.print(f"Please set --rendered_output_name to one of: {outputs.keys()}", justify="center")
                     sys.exit(1)
                 if rendered_output_name == "semantics":
-                    output_image = torch.argmax(outputs[rendered_output_name], dim=-1).cpu().numpy().astype(np.uint8)
+                    pred = outputs[rendered_output_name]
+                    pred = torch.argmax(pred, dim=-1).cpu()
+                    pred = semantics_model2output[pred.long()]
+                    output_image = pred.numpy().astype(np.uint8)
                 else:
                     output_image = outputs[rendered_output_name].cpu().numpy()
                 render_image.append(output_image)
