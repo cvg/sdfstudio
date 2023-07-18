@@ -90,7 +90,7 @@ class ExtractMesh:
                 save_points("mask.ply", points.cpu().numpy())
                 torch.save(coarse_mask, "coarse_mask.pt")
 
-            get_surface_sliding_with_contraction(
+            mesh = get_surface_sliding_with_contraction(
                 sdf=lambda x: (
                     pipeline.model.field.forward_geonetwork(x)[:, 0] - self.marching_cube_threshold
                 ).contiguous(),
@@ -98,10 +98,26 @@ class ExtractMesh:
                 bounding_box_min=self.bounding_box_min,
                 bounding_box_max=self.bounding_box_max,
                 coarse_mask=coarse_mask,
-                output_path=self.output_path,
+                return_mesh=True,
+                #output_path=self.output_path,
                 simplify_mesh=self.simplify_mesh,
                 inv_contraction=inv_contract,
             )
+            # save as in original function
+            filename = str(self.output_path)
+            mesh.export(filename)
+
+            # convert into original coordinate frame
+            # load metadata from preprocessing
+            meta = json.load(pipeline.datamanager.dataparser.config.data / "meta_data.json")
+            nerf2gt = np.array(meta["worldtogt"])
+            scaled_vertices = np.asarray(mesh.vertices)
+            scaled_vertices = np.concatenate(scaled_vertices, np.ones((scaled_vertices.shape[0], 1)), axis=-1)
+            scaled_vertices = (nerf2gt @ scaled_vertices.T).T
+            mesh.vertices = scaled_vertices[:, :3]
+            filename = str(self.output_path).replace(".ply", "_scaled.ply")
+            mesh.export(filename)
+
             return
 
         if self.is_occupancy:
