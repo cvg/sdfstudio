@@ -170,7 +170,7 @@ class SurfaceModel(Model):
                     [torch.tensor([self.config.semantic_ignore_label]), torch.tensor(self.semantics_model2output)])
             else:
                 self.semantics_model2output = torch.tensor(self.semantics_model2output)
-            self.semantics_output2model = torch.zeros(len(self.semantics.classes), dtype=torch.long)
+            self.semantics_output2model = torch.zeros(hist.shape[0], dtype=torch.long)
             self.semantics_output2model[self.semantics_model2output] = torch.arange(
                 self.semantics_model2output.shape[0], dtype=torch.long
             )
