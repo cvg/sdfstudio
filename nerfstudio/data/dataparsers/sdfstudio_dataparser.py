@@ -27,12 +27,7 @@ from torchtyping import TensorType
 
 from nerfstudio.cameras import camera_utils
 from nerfstudio.cameras.cameras import Cameras, CameraType
-from nerfstudio.data.dataparsers.base_dataparser import (
-    DataParser,
-    DataParserConfig,
-    DataparserOutputs,
-    Semantics,
-)
+from nerfstudio.data.dataparsers.base_dataparser import DataParser, DataParserConfig, DataparserOutputs, Semantics
 from nerfstudio.data.scene_box import SceneBox
 from nerfstudio.utils.images import BasicImages
 from nerfstudio.utils.io import load_from_json
@@ -105,7 +100,7 @@ def get_sensor_depths(image_idx: int, sensor_depths):
 
     return {"sensor_depth": sensor_depth}
 
-def get_semantics(image_idx: int, semantic_path, group_path):
+def get_semantics(image_idx: int, semantic_path, group_path=None):
     """function to process semantic labels
 
     Args:
@@ -116,17 +111,21 @@ def get_semantics(image_idx: int, semantic_path, group_path):
     # semantics
     semantic = np.array(Image.open(semantic_path[image_idx]), dtype="uint8")
     semantic = torch.from_numpy(semantic).type(torch.uint8)
+    results = {"semantics": semantic}
+    
     # groups for patch loss
-    groups_raw = np.array(Image.open(group_path[image_idx]), dtype="uint8")
-    groups_raw = torch.from_numpy(groups_raw).type(torch.uint8)
-    # make sure groups are unique and start from 0
-    groups = torch.zeros_like(groups_raw)
-    for i, group_id in enumerate(groups_raw.unique()):
-        groups[groups_raw == group_id] = i
-    groups = groups.type(torch.uint8)
+    if group_path[image_idx] is not None:
+        groups_raw = np.array(Image.open(group_path[image_idx]), dtype="uint8")
+        groups_raw = torch.from_numpy(groups_raw).type(torch.uint8)
+        # make sure groups are unique and start from 0
+        groups = torch.zeros_like(groups_raw)
+        for i, group_id in enumerate(groups_raw.unique()):
+            groups[groups_raw == group_id] = i
+        groups = groups.type(torch.uint8)
 
-    return {"semantics": semantic, "semantic_groups": groups}
-    #return {"semantics": semantic}
+        results["semantic_groups"] = groups
+    
+    return results
 
 
 def get_foreground_masks(image_idx: int, fg_masks):
@@ -290,8 +289,11 @@ class SDFStudio(DataParser):
                 # load semantic labels
                 filepath = str(self.config.data / frame["label_path"])
                 semantic_filenames.append(filepath)
-                filepath = str(self.config.data / frame["group_path"])
-                group_filenames.append(filepath)
+                if "group_path" in frame.keys():
+                    filepath = str(self.config.data / frame["group_path"])
+                    group_filenames.append(filepath)
+                else:
+                    group_filenames.append(None)
 
         fx = torch.stack(fx)
         fy = torch.stack(fy)
