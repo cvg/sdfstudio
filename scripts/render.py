@@ -72,7 +72,7 @@ def _render_trajectory_video(
         output_image_dir.mkdir(parents=True, exist_ok=True)
     else:
         install_checks.check_ffmpeg_installed()
-    semantics_model2output = pipeline.model.semantics_model2output.copy().cpu()
+    semantics_model2output = pipeline.model.semantics_model2output.detach().cpu()
     with progress:
         for camera_idx in progress.track(range(cameras.size), description=""):
             camera_ray_bundle = cameras.generate_rays(camera_indices=camera_idx)
