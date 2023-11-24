@@ -266,8 +266,16 @@ class SurfaceModel(Model):
         self.ssim = structural_similarity_index_measure
         self.lpips = LearnedPerceptualImagePatchSimilarity()
         if hasattr(self, 'semantics'):
-            self.sem_accuracy = Accuracy(task='multiclass', num_classes=self.semantics_numclasses)
-            self.sem_miou = JaccardIndex(task='multiclass', num_classes=self.semantics_numclasses)
+            self.sem_accuracy = Accuracy(
+                task='multiclass', 
+                num_classes=self.semantics_numclasses, 
+                ignore_index=self.config.semantic_ignore_label
+            )
+            self.sem_miou = JaccardIndex(
+                task='multiclass', 
+                num_classes=self.semantics_numclasses,
+                ignore_index=self.config.semantic_ignore_label
+            )
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -595,10 +603,10 @@ class SurfaceModel(Model):
         #metrics_dict["lpips"] = float(lpips)
 
         if "sensor_depth" in batch:
-            sensor_depth = batch["sensor_depth"]
+            sensor_depth = batch["sensor_depth"][..., None]
             depth_pred = outputs["depth"]
 
-            combined_sensor_depth = torch.cat([sensor_depth[..., None], depth_pred], dim=1)
+            combined_sensor_depth = torch.cat([sensor_depth, depth_pred], dim=1)
             combined_sensor_depth = colormaps.apply_depth_colormap(combined_sensor_depth)
             images_dict["sensor_depth"] = combined_sensor_depth
             depth_pred  = depth_pred .to('cpu')
