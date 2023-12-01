@@ -100,7 +100,7 @@ def get_sensor_depths(image_idx: int, sensor_depths):
 
     return {"sensor_depth": sensor_depth}
 
-def get_semantics(image_idx: int, semantic_path, group_path=None):
+def get_semantics(image_idx: int, semantic_path, include_semantic_group=False, group_path=None):
     """function to process semantic labels
 
     Args:
@@ -114,7 +114,8 @@ def get_semantics(image_idx: int, semantic_path, group_path=None):
     results = {"semantics": semantic}
     
     # groups for patch loss
-    if group_path[image_idx] is not None:
+    if include_semantic_group:
+        assert group_path[image_idx] is not None
         groups_raw = np.array(Image.open(group_path[image_idx]), dtype="uint8")
         groups_raw = torch.from_numpy(groups_raw).type(torch.uint8)
         # make sure groups are unique and start from 0
@@ -173,6 +174,8 @@ class SDFStudioDataParserConfig(DataParserConfig):
     include_sfm_points: bool = False
     """whether or not to load semantic labels"""
     include_semantics: bool = False
+    """whether or not to load semantic (or instance) segmentation group. """
+    include_semantic_groups: bool = False
     """whether or not to load sfm points"""
     downscale_factor: int = 1
     scene_scale: float = 2.0
@@ -289,7 +292,8 @@ class SDFStudio(DataParser):
                 # load semantic labels
                 filepath = str(self.config.data / frame["label_path"])
                 semantic_filenames.append(filepath)
-                if "group_path" in frame.keys():
+                if self.config.include_semantic_groups:
+                    assert "group_path" in frame.keys()
                     filepath = str(self.config.data / frame["group_path"])
                     group_filenames.append(filepath)
                 else:
@@ -408,7 +412,11 @@ class SDFStudio(DataParser):
 
             additional_inputs_dict["semantics"] = {
                 "func": get_semantics,
-                "kwargs": {"semantic_path": semantic_filenames, "group_path": group_filenames},
+                "kwargs": {
+                    "semantic_path": semantic_filenames, 
+                    "include_semantic_group": self.config.include_semantic_groups,
+                    "group_path": group_filenames
+                },
             }
 
         dataparser_outputs = DataparserOutputs(
