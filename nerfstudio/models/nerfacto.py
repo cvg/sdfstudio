@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,41 +19,34 @@ NeRF implementation that combines many recent advancements.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Type
+from typing import Dict, List, Literal, Tuple, Type
 
 import numpy as np
 import torch
 from torch.nn import Parameter
-from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
+from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
-from typing_extensions import Literal
 
-from nerfstudio.cameras.rays import RayBundle
-from nerfstudio.engine.callbacks import (
-    TrainingCallback,
-    TrainingCallbackAttributes,
-    TrainingCallbackLocation,
-)
+from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
+from nerfstudio.cameras.rays import RayBundle, RaySamples
+from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes, TrainingCallbackLocation
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.field_components.spatial_distortions import SceneContraction
 from nerfstudio.fields.density_fields import HashMLPDensityField
-from nerfstudio.fields.nerfacto_field import TCNNNerfactoField
+from nerfstudio.fields.nerfacto_field import NerfactoField
 from nerfstudio.model_components.losses import (
     MSELoss,
     distortion_loss,
     interlevel_loss,
     orientation_loss,
     pred_normal_loss,
+    scale_gradients_by_distance_squared,
 )
-from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler
-from nerfstudio.model_components.renderers import (
-    AccumulationRenderer,
-    DepthRenderer,
-    NormalsRenderer,
-    RGBRenderer,
-)
+from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler, UniformSampler
+from nerfstudio.model_components.renderers import AccumulationRenderer, DepthRenderer, NormalsRenderer, RGBRenderer
 from nerfstudio.model_components.scene_colliders import NearFarCollider
+from nerfstudio.model_components.shaders import NormalsShader
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps
 from nerfstudio.utils.colors import get_color
@@ -68,16 +61,26 @@ class NerfactoModelConfig(ModelConfig):
     """How far along the ray to start sampling."""
     far_plane: float = 1000.0
     """How far along the ray to stop sampling."""
-    background_color: Literal["random", "last_sample", "white", "black"] = "last_sample"
+    background_color: Literal["random", "last_sample", "black", "white"] = "last_sample"
     """Whether to randomize the background color."""
+    hidden_dim: int = 64
+    """Dimension of hidden layers"""
+    hidden_dim_color: int = 64
+    """Dimension of hidden layers for color network"""
+    hidden_dim_transient: int = 64
+    """Dimension of hidden layers for transient network"""
     num_levels: int = 16
     """Number of levels of the hashmap for the base mlp."""
-    max_res: int = 1024
+    base_res: int = 16
+    """Resolution of the base grid for the hashgrid."""
+    max_res: int = 2048
     """Maximum resolution of the hashmap for the base mlp."""
     log2_hashmap_size: int = 19
     """Size of the hashmap for the base mlp"""
-    num_proposal_samples_per_ray: Tuple[int] = (256, 96)
-    """Number of samples per ray for the proposal network."""
+    features_per_level: int = 2
+    """How many hashgrid features per level"""
+    num_proposal_samples_per_ray: Tuple[int, ...] = (256, 96)
+    """Number of samples per ray for each proposal network."""
     num_nerf_samples_per_ray: int = 48
     """Number of samples per ray for the nerf network."""
     proposal_update_every: int = 5
@@ -90,17 +93,19 @@ class NerfactoModelConfig(ModelConfig):
     """Use the same proposal network. Otherwise use different ones."""
     proposal_net_args_list: List[Dict] = field(
         default_factory=lambda: [
-            {"hidden_dim": 16, "log2_hashmap_size": 17, "num_levels": 5, "max_res": 64},
-            {"hidden_dim": 16, "log2_hashmap_size": 17, "num_levels": 5, "max_res": 256},
+            {"hidden_dim": 16, "log2_hashmap_size": 17, "num_levels": 5, "max_res": 128, "use_linear": False},
+            {"hidden_dim": 16, "log2_hashmap_size": 17, "num_levels": 5, "max_res": 256, "use_linear": False},
         ]
     )
     """Arguments for the proposal density fields."""
+    proposal_initial_sampler: Literal["piecewise", "uniform"] = "piecewise"
+    """Initial sampler for the proposal network. Piecewise is preferred for unbounded scenes."""
     interlevel_loss_mult: float = 1.0
     """Proposal loss multiplier."""
     distortion_loss_mult: float = 0.002
     """Distortion loss multiplier."""
     orientation_loss_mult: float = 0.0001
-    """Orientation loss multipier on computed noramls."""
+    """Orientation loss multiplier on computed normals."""
     pred_normal_loss_mult: float = 0.001
     """Predicted normal loss multiplier."""
     use_proposal_weight_anneal: bool = True
@@ -115,6 +120,16 @@ class NerfactoModelConfig(ModelConfig):
     """Whether use single jitter or not for the proposal networks."""
     predict_normals: bool = False
     """Whether to predict normals or not."""
+    disable_scene_contraction: bool = False
+    """Whether to disable scene contraction or not."""
+    use_gradient_scaling: bool = False
+    """Use gradient scaler where the gradients are lower for points closer to the camera."""
+    implementation: Literal["tcnn", "torch"] = "tcnn"
+    """Which implementation to use for the model."""
+    appearance_embed_dim: int = 32
+    """Dimension of the appearance embedding."""
+    camera_optimizer: CameraOptimizerConfig = field(default_factory=lambda: CameraOptimizerConfig(mode="SO3xR3"))
+    """Config of the camera optimizer to use"""
 
 
 class NerfactoModel(Model):
@@ -130,20 +145,33 @@ class NerfactoModel(Model):
         """Set the fields and modules."""
         super().populate_modules()
 
-        scene_contraction = SceneContraction(order=float("inf"))
+        if self.config.disable_scene_contraction:
+            scene_contraction = None
+        else:
+            scene_contraction = SceneContraction(order=float("inf"))
 
         # Fields
-        self.field = TCNNNerfactoField(
+        self.field = NerfactoField(
             self.scene_box.aabb,
+            hidden_dim=self.config.hidden_dim,
             num_levels=self.config.num_levels,
             max_res=self.config.max_res,
+            base_res=self.config.base_res,
+            features_per_level=self.config.features_per_level,
             log2_hashmap_size=self.config.log2_hashmap_size,
+            hidden_dim_color=self.config.hidden_dim_color,
+            hidden_dim_transient=self.config.hidden_dim_transient,
             spatial_distortion=scene_contraction,
             num_images=self.num_train_data,
             use_pred_normals=self.config.predict_normals,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
+            appearance_embedding_dim=self.config.appearance_embed_dim,
+            implementation=self.config.implementation,
         )
 
+        self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
+            num_cameras=self.num_train_data, device="cpu"
+        )
         self.density_fns = []
         num_prop_nets = self.config.num_proposal_iterations
         # Build the proposal network(s)
@@ -151,7 +179,12 @@ class NerfactoModel(Model):
         if self.config.use_same_proposal_network:
             assert len(self.config.proposal_net_args_list) == 1, "Only one proposal network is allowed."
             prop_net_args = self.config.proposal_net_args_list[0]
-            network = HashMLPDensityField(self.scene_box.aabb, spatial_distortion=scene_contraction, **prop_net_args)
+            network = HashMLPDensityField(
+                self.scene_box.aabb,
+                spatial_distortion=scene_contraction,
+                **prop_net_args,
+                implementation=self.config.implementation,
+            )
             self.proposal_networks.append(network)
             self.density_fns.extend([network.density_fn for _ in range(num_prop_nets)])
         else:
@@ -161,22 +194,31 @@ class NerfactoModel(Model):
                     self.scene_box.aabb,
                     spatial_distortion=scene_contraction,
                     **prop_net_args,
+                    implementation=self.config.implementation,
                 )
                 self.proposal_networks.append(network)
             self.density_fns.extend([network.density_fn for network in self.proposal_networks])
 
         # Samplers
-        update_schedule = lambda step: np.clip(
-            np.interp(step, [0, self.config.proposal_warmup], [0, self.config.proposal_update_every]),
-            1,
-            self.config.proposal_update_every,
-        )
+        def update_schedule(step):
+            return np.clip(
+                np.interp(step, [0, self.config.proposal_warmup], [0, self.config.proposal_update_every]),
+                1,
+                self.config.proposal_update_every,
+            )
+
+        # Change proposal network initial sampler if uniform
+        initial_sampler = None  # None is for piecewise as default (see ProposalNetworkSampler)
+        if self.config.proposal_initial_sampler == "uniform":
+            initial_sampler = UniformSampler(single_jitter=self.config.use_single_jitter)
+
         self.proposal_sampler = ProposalNetworkSampler(
             num_nerf_samples_per_ray=self.config.num_nerf_samples_per_ray,
             num_proposal_samples_per_ray=self.config.num_proposal_samples_per_ray,
             num_proposal_network_iterations=self.config.num_proposal_iterations,
             single_jitter=self.config.use_single_jitter,
             update_sched=update_schedule,
+            initial_sampler=initial_sampler,
         )
 
         # Collider
@@ -190,21 +232,27 @@ class NerfactoModel(Model):
         )
         self.renderer_rgb = RGBRenderer(background_color=background_color)
         self.renderer_accumulation = AccumulationRenderer()
-        self.renderer_depth = DepthRenderer()
+        self.renderer_depth = DepthRenderer(method="median")
+        self.renderer_expected_depth = DepthRenderer(method="expected")
         self.renderer_normals = NormalsRenderer()
+
+        # shaders
+        self.normals_shader = NormalsShader()
 
         # losses
         self.rgb_loss = MSELoss()
-
+        self.step = 0
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity()
+        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
+        self.step = 0
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
         param_groups["proposal_networks"] = list(self.proposal_networks.parameters())
         param_groups["fields"] = list(self.field.parameters())
+        self.camera_optimizer.get_param_groups(param_groups=param_groups)
         return param_groups
 
     def get_training_callbacks(
@@ -217,8 +265,13 @@ class NerfactoModel(Model):
 
             def set_anneal(step):
                 # https://arxiv.org/pdf/2111.12077.pdf eq. 18
+                self.step = step
                 train_frac = np.clip(step / N, 0, 1)
-                bias = lambda x, b: (b * x) / ((b - 1) * x + 1)
+                self.step = step
+
+                def bias(x, b):
+                    return b * x / ((b - 1) * x + 1)
+
                 anneal = bias(train_frac, self.config.proposal_weights_anneal_slope)
                 self.proposal_sampler.set_anneal(anneal)
 
@@ -239,26 +292,37 @@ class NerfactoModel(Model):
         return callbacks
 
     def get_outputs(self, ray_bundle: RayBundle):
+        # apply the camera optimizer pose tweaks
+        if self.training:
+            self.camera_optimizer.apply_to_raybundle(ray_bundle)
+        ray_samples: RaySamples
         ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
-        field_outputs = self.field(ray_samples, compute_normals=self.config.predict_normals)
+        field_outputs = self.field.forward(ray_samples, compute_normals=self.config.predict_normals)
+        if self.config.use_gradient_scaling:
+            field_outputs = scale_gradients_by_distance_squared(field_outputs, ray_samples)
+
         weights = ray_samples.get_weights(field_outputs[FieldHeadNames.DENSITY])
         weights_list.append(weights)
         ray_samples_list.append(ray_samples)
 
         rgb = self.renderer_rgb(rgb=field_outputs[FieldHeadNames.RGB], weights=weights)
-        depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
+        with torch.no_grad():
+            depth = self.renderer_depth(weights=weights, ray_samples=ray_samples)
+        expected_depth = self.renderer_expected_depth(weights=weights, ray_samples=ray_samples)
         accumulation = self.renderer_accumulation(weights=weights)
 
         outputs = {
             "rgb": rgb,
             "accumulation": accumulation,
             "depth": depth,
+            "expected_depth": expected_depth,
         }
 
         if self.config.predict_normals:
-            outputs["normals"] = self.renderer_normals(normals=field_outputs[FieldHeadNames.NORMALS], weights=weights)
-            outputs["pred_normals"] = self.renderer_normals(field_outputs[FieldHeadNames.PRED_NORMALS], weights=weights)
-
+            normals = self.renderer_normals(normals=field_outputs[FieldHeadNames.NORMALS], weights=weights)
+            pred_normals = self.renderer_normals(field_outputs[FieldHeadNames.PRED_NORMALS], weights=weights)
+            outputs["normals"] = self.normals_shader(normals)
+            outputs["pred_normals"] = self.normals_shader(pred_normals)
         # These use a lot of GPU memory, so we avoid storing them for eval.
         if True or self.training:
             outputs["weights_list"] = weights_list
@@ -277,21 +341,31 @@ class NerfactoModel(Model):
 
         for i in range(self.config.num_proposal_iterations):
             outputs[f"prop_depth_{i}"] = self.renderer_depth(weights=weights_list[i], ray_samples=ray_samples_list[i])
-
         return outputs
 
     def get_metrics_dict(self, outputs, batch):
         metrics_dict = {}
-        image = batch["image"].to(self.device)
-        metrics_dict["psnr"] = self.psnr(outputs["rgb"], image)
+        gt_rgb = batch["image"].to(self.device)  # RGB or RGBA image
+        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)  # Blend if RGBA
+        predicted_rgb = outputs["rgb"]
+        metrics_dict["psnr"] = self.psnr(predicted_rgb, gt_rgb)
+
         if self.training:
             metrics_dict["distortion"] = distortion_loss(outputs["weights_list"], outputs["ray_samples_list"])
+
+        self.camera_optimizer.get_metrics_dict(metrics_dict)
         return metrics_dict
 
     def get_loss_dict(self, outputs, batch, metrics_dict=None):
         loss_dict = {}
         image = batch["image"].to(self.device)
-        loss_dict["rgb_loss"] = self.rgb_loss(image, outputs["rgb"])
+        pred_rgb, gt_rgb = self.renderer_rgb.blend_background_for_loss_computation(
+            pred_image=outputs["rgb"],
+            pred_accumulation=outputs["accumulation"],
+            gt_image=image,
+        )
+
+        loss_dict["rgb_loss"] = self.rgb_loss(gt_rgb, pred_rgb)
         if self.training:
             loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss(
                 outputs["weights_list"], outputs["ray_samples_list"]
@@ -308,43 +382,39 @@ class NerfactoModel(Model):
                 loss_dict["pred_normal_loss"] = self.config.pred_normal_loss_mult * torch.mean(
                     outputs["rendered_pred_normal_loss"]
                 )
+            # Add loss from camera optimizer
+            self.camera_optimizer.get_loss_dict(loss_dict)
         return loss_dict
 
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
-
-        image = batch["image"].to(self.device)
-        rgb = outputs["rgb"]
+        gt_rgb = batch["image"].to(self.device)
+        predicted_rgb = outputs["rgb"]  # Blended with background (black if random background)
+        gt_rgb = self.renderer_rgb.blend_background(gt_rgb)
         acc = colormaps.apply_colormap(outputs["accumulation"])
         depth = colormaps.apply_depth_colormap(
             outputs["depth"],
             accumulation=outputs["accumulation"],
         )
 
-        combined_rgb = torch.cat([image, rgb], dim=1)
+        combined_rgb = torch.cat([gt_rgb, predicted_rgb], dim=1)
         combined_acc = torch.cat([acc], dim=1)
         combined_depth = torch.cat([depth], dim=1)
 
         # Switch images from [H, W, C] to [1, C, H, W] for metrics computations
-        image = torch.moveaxis(image, -1, 0)[None, ...]
-        rgb = torch.moveaxis(rgb, -1, 0)[None, ...]
+        gt_rgb = torch.moveaxis(gt_rgb, -1, 0)[None, ...]
+        predicted_rgb = torch.moveaxis(predicted_rgb, -1, 0)[None, ...]
 
-        psnr = self.psnr(image, rgb)
-        ssim = self.ssim(image, rgb)
-        lpips = self.lpips(image, rgb)
+        psnr = self.psnr(gt_rgb, predicted_rgb)
+        ssim = self.ssim(gt_rgb, predicted_rgb)
+        lpips = self.lpips(gt_rgb, predicted_rgb)
 
         # all of these metrics will be logged as scalars
         metrics_dict = {"psnr": float(psnr.item()), "ssim": float(ssim)}  # type: ignore
         metrics_dict["lpips"] = float(lpips)
 
         images_dict = {"img": combined_rgb, "accumulation": combined_acc, "depth": combined_depth}
-
-        # normals to RGB for visualization. TODO: use a colormap
-        if "normals" in outputs:
-            images_dict["normals"] = (outputs["normals"] + 1.0) / 2.0
-        if "pred_normals" in outputs:
-            images_dict["pred_normals"] = (outputs["pred_normals"] + 1.0) / 2.0
 
         for i in range(self.config.num_proposal_iterations):
             key = f"prop_depth_{i}"

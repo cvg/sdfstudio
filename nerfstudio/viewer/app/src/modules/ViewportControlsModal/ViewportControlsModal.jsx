@@ -26,11 +26,11 @@ export default function ControlsModal() {
         aria-labelledby="modal-modal-title"
         aria-describedby="modal-modal-description"
       >
-        <Box className="ViewportConstrolsModal-box">
+        <Box className="ViewportControlsModal-box">
           <center>
             <img
               style={{ height: 37, margin: 'auto' }}
-              src="https://docs.nerf.studio/en/latest/_images/logo-dark.png"
+              src="https://docs.nerf.studio/_images/logo-dark.png"
               alt="The favicon."
             />
             <img

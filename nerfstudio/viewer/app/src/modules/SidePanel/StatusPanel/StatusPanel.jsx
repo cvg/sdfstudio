@@ -4,11 +4,13 @@ import Button from '@mui/material/Button';
 import { useDispatch, useSelector } from 'react-redux';
 import PauseIcon from '@mui/icons-material/Pause';
 import PlayArrowIcon from '@mui/icons-material/PlayArrow';
+import CelebrationOutlinedIcon from '@mui/icons-material/CelebrationOutlined';
 import ViewInArIcon from '@mui/icons-material/ViewInAr';
-
-import { WebSocketContext } from '../../WebSocket/WebSocket';
-
-const msgpack = require('msgpack-lite');
+import ImageOutlinedIcon from '@mui/icons-material/ImageOutlined';
+import {
+  ViserWebSocketContext,
+  sendWebsocketMessage,
+} from '../../WebSocket/ViserWebSocket';
 
 interface StatusPanelProps {
   sceneTree: object;
@@ -16,64 +18,76 @@ interface StatusPanelProps {
 
 export default function StatusPanel(props: StatusPanelProps) {
   const dispatch = useDispatch();
-  const websocket = React.useContext(WebSocketContext).socket;
-  const isTraining = useSelector((state) => state.renderingState.isTraining);
+  const viser_websocket = React.useContext(ViserWebSocketContext);
+  const training_state = useSelector(
+    (state) => state.renderingState.training_state,
+  );
   const sceneTree = props.sceneTree;
 
   const isWebsocketConnected = useSelector(
     (state) => state.websocketState.isConnected,
   );
+  const step = useSelector((state) => state.renderingState.step);
   const eval_res = useSelector((state) => state.renderingState.eval_res);
-  const vis_train_ratio = useSelector(
-    (state) => state.renderingState.vis_train_ratio,
+  const camera_choice = useSelector(
+    (state) => state.renderingState.camera_choice,
   );
 
   // logic for toggling visibility of the entire scene and just the training images
-  const [is_scene_visible, set_is_scene_visible] = React.useState(1);
-  const [is_images_visible, set_is_images_visible] = React.useState(1);
+  const [is_scene_visible, set_is_scene_visible] = React.useState(true);
+  const [is_images_visible, set_is_images_visible] = React.useState(true);
   const scene_button = is_scene_visible ? 'Hide Scene' : 'Show Scene';
   const cameras_button = is_images_visible ? 'Hide Images' : 'Show Images';
-  sceneTree.object.visible = is_scene_visible;
+  sceneTree.object.visible =
+    is_scene_visible && camera_choice === 'Main Camera';
   if (sceneTree.find_no_create(['Training Cameras']) !== null) {
     sceneTree.find_no_create(['Training Cameras']).object.visible =
       is_images_visible;
   }
 
   React.useEffect(() => {
-    sceneTree.object.traverse(
-      (obj) => {
-        if (obj.name === 'CAMERA_LABEL') {
-          // eslint-disable-next-line no-param-reassign
-          obj.visible = is_scene_visible;
-        }
+    sceneTree.object.traverse((obj) => {
+      if (obj.name === 'CAMERA_LABEL') {
+        // eslint-disable-next-line no-param-reassign
+        obj.visible = is_scene_visible && camera_choice === 'Main Camera';
       }
-    );
-  }, [is_scene_visible]);
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [camera_choice, is_scene_visible]);
 
   const handlePlayChange = () => {
+    let new_state = null;
+    if (training_state === 'training') {
+      new_state = 'paused';
+    } else if (training_state === 'paused') {
+      new_state = 'training';
+    } else {
+      return;
+    }
     dispatch({
       type: 'write',
-      path: 'renderingState/isTraining',
-      data: !isTraining,
+      path: 'renderingState/training_state',
+      data: new_state,
     });
-    // write to server
-    const cmd = 'write';
-    const path = 'renderingState/isTraining';
-    const data = {
-      type: cmd,
-      path,
-      data: !isTraining,
-    };
-    const message = msgpack.encode(data);
-    websocket.send(message);
+    sendWebsocketMessage(viser_websocket, {
+      type: 'TrainingStateMessage',
+      training_state: new_state,
+    });
   };
-  const is_training_text = isTraining ? 'Pause Training' : 'Resume Training';
-  const training_icon = isTraining ? <PauseIcon /> : <PlayArrowIcon />;
-
-  const websocket_connected_text = isWebsocketConnected
-    ? 'Renderer Connected'
-    : 'Renderer Disconnected';
-  const websocket_connected_color = isWebsocketConnected ? 'success' : 'error';
+  let is_training_text = '';
+  let training_icon = null;
+  let color = 'secondary';
+  if (training_state === 'training') {
+    is_training_text = 'Pause Training';
+    training_icon = <PauseIcon />;
+  } else if (training_state === 'paused') {
+    is_training_text = 'Resume Training';
+    training_icon = <PlayArrowIcon />;
+  } else {
+    is_training_text = 'Training Complete';
+    color = 'success';
+    training_icon = <CelebrationOutlinedIcon />;
+  }
 
   return (
     <div className="StatusPanel">
@@ -81,7 +95,7 @@ export default function StatusPanel(props: StatusPanelProps) {
         <Button
           className="StatusPanel-play-button"
           variant="contained"
-          color="secondary"
+          color={color}
           onClick={handlePlayChange}
           disabled={!isWebsocketConnected}
           startIcon={training_icon}
@@ -97,6 +111,7 @@ export default function StatusPanel(props: StatusPanelProps) {
         }}
         style={{ textTransform: 'none' }}
         startIcon={<ViewInArIcon />}
+        disabled={camera_choice === 'Render Camera'}
       >
         {scene_button}
       </Button>
@@ -107,7 +122,8 @@ export default function StatusPanel(props: StatusPanelProps) {
           set_is_images_visible(!is_images_visible);
         }}
         style={{ textTransform: 'none' }}
-        startIcon={<ViewInArIcon />}
+        startIcon={<ImageOutlinedIcon />}
+        disabled={camera_choice === 'Render Camera'}
       >
         {cameras_button}
       </Button>
@@ -124,19 +140,12 @@ export default function StatusPanel(props: StatusPanelProps) {
       </Button>
       <div className="StatusPanel-metrics">
         <div>
-          <b>Resolution:</b> {eval_res}
+          <b>Iteration:</b> {step}
         </div>
         <div>
-          <b>Time Allocation:</b> {vis_train_ratio}
+          <b>Resolution:</b> {eval_res}
         </div>
       </div>
-      <Button
-        className="StatusPanel-button"
-        color={websocket_connected_color}
-        style={{ textTransform: 'none' }}
-      >
-        {websocket_connected_text}
-      </Button>
     </div>
   );
 }

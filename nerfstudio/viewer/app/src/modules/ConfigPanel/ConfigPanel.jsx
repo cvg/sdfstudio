@@ -1,242 +1,171 @@
-import { buttonGroup, useControls } from 'leva';
-import { useContext, useEffect, useState } from 'react';
+import * as React from 'react';
+import {
+  LevaPanel,
+  useCreateStore,
+  Leva,
+  useControls,
+  folder,
+  button,
+  buttonGroup,
+} from 'leva';
 import { useDispatch, useSelector } from 'react-redux';
+import { Box } from '@mui/material';
+import LevaTheme from '../../themes/leva_theme.json';
+import {
+  ViserWebSocketContext,
+  sendWebsocketMessage,
+  makeThrottledMessageSender,
+} from '../WebSocket/ViserWebSocket';
 
-import { WebSocketContext } from '../WebSocket/WebSocket';
+function CustomLeva() {
+  const viser_websocket = React.useContext(ViserWebSocketContext);
+  const customGui = useSelector((state) => state.custom_gui);
+  const guiNames = customGui.guiNames;
+  const guiConfigFromName = customGui.guiConfigFromName;
 
-const msgpack = require('msgpack-lite');
+  // We're going to try and build an object that looks like:
+  // {"folder name": {"input name": leva config}}
+  const guiConfigTree: { [key: string]: any } = {};
+  function getFolderContainer(folderLabels: string[]) {
+    let guiConfigNode = guiConfigTree;
+    folderLabels.forEach((label) => {
+      if (guiConfigNode[label] === undefined) {
+        guiConfigNode[label] = { _is_folder_marker: true };
+      }
+      guiConfigNode = guiConfigNode[label];
+    });
+    return guiConfigNode;
+  }
 
-export function RenderControls() {
-  // connection status indicators
-  const websocket = useContext(WebSocketContext).socket;
-  const outputOptions = useSelector(
-    (state) => state.renderingState.output_options,
-  );
-  const outputChoice = useSelector(
-    (state) => state.renderingState.output_choice,
-  );
-  const colormapOptions = useSelector(
-    (state) => state.renderingState.colormap_options,
-  );
-  const colormapChoice = useSelector(
-    (state) => state.renderingState.colormap_choice,
-  );
-  const max_resolution = useSelector(
-    (state) => state.renderingState.maxResolution,
-  );
-  const target_train_util = useSelector(
-    (state) => state.renderingState.targetTrainUtil,
-  );
-  const render_time = useSelector(
-    (state) => state.renderingState.renderTime,
+  guiNames.forEach((key) => {
+    const { levaConf, folderLabels, hidden } = guiConfigFromName[key];
+    const leafFolder = getFolderContainer(folderLabels);
+
+    // Hacky stuff that lives outside of TypeScript...
+    if (levaConf.type === 'BUTTON') {
+      if (hidden) return;
+      // Add a button.
+      leafFolder[key] = button(() => {
+        sendWebsocketMessage(viser_websocket, {
+          type: 'GuiUpdateMessage',
+          name: key,
+          value: true,
+        });
+      }, levaConf.settings);
+    } else if (levaConf.type === 'BUTTON_GROUP') {
+      // Add a button group.
+      leafFolder[key] = buttonGroup({
+        label: levaConf.label,
+        opts: levaConf.options.reduce((acc, opt) => {
+          acc[opt] = () =>
+            sendWebsocketMessage(viser_websocket, {
+              type: 'GuiUpdateMessage',
+              name: key,
+              value: opt,
+            });
+          return acc;
+        }, {}),
+      });
+    } else {
+      // Add any other kind of input.
+      const throttledSender = makeThrottledMessageSender(viser_websocket, 25);
+      leafFolder[key] = {
+        ...levaConf,
+        onChange: (value: any, _propName: any, options: any) => {
+          if (options.initial) return;
+          throttledSender({
+            type: 'GuiUpdateMessage',
+            name: key,
+            value,
+          });
+        },
+        render: () => !hidden,
+      };
+    }
+  });
+
+  // Recursively wrap folders in a GUI config tree with Leva's `folder()`.
+  function wrapFoldersInGuiConfigTree(
+    guiConfigNode: { [key: string]: any },
+    root: boolean,
+  ) {
+    const { _is_folder_marker, ...rest } = guiConfigNode;
+    const nodeCopy = { ...rest };
+
+    if (root || _is_folder_marker === true) {
+      const out: { [key: string]: any } = {};
+      Object.entries(nodeCopy).forEach(([k, v]) => {
+        out[k] = wrapFoldersInGuiConfigTree(v, false);
+      });
+      return root ? out : folder(out);
+    }
+    return guiConfigNode;
+  }
+
+  // Make Leva controls.
+  const levaStore = useCreateStore();
+  const [, set] = useControls(
+    () => wrapFoldersInGuiConfigTree(guiConfigTree, true),
+    { store: levaStore },
+    [guiConfigFromName],
   );
 
   const dispatch = useDispatch();
-
-  const set_max_resolution = (value) => {
-    if (websocket.readyState === WebSocket.OPEN) {
-      dispatch({
-        type: 'write',
-        path: 'renderingState/maxResolution',
-        data: value,
-      });
-      const cmd = 'write';
-      const path = 'renderingState/maxResolution';
-      const data = {
-        type: cmd,
-        path,
-        data: value,
-      };
-      const message = msgpack.encode(data);
-      websocket.send(message);
-    }
-  };
-
-  const set_target_train_util = (value) => {
-    if (websocket.readyState === WebSocket.OPEN) {
-      dispatch({
-        type: 'write',
-        path: 'renderingState/targetTrainUtil',
-        data: value,
-      });
-      const cmd = 'write';
-      const path = 'renderingState/targetTrainUtil';
-      const data = {
-        type: cmd,
-        path,
-        data: value,
-      };
-      const message = msgpack.encode(data);
-      websocket.send(message);
-    }
-  };
-
-  const set_output_choice = (value) => {
-    if (websocket.readyState === WebSocket.OPEN) {
-      dispatch({
-        type: 'write',
-        path: 'renderingState/output_choice',
-        data: value,
-      });
-      const cmd = 'write';
-      const path = 'renderingState/output_choice';
-      const data = {
-        type: cmd,
-        path,
-        data: value,
-      };
-      const message = msgpack.encode(data);
-      websocket.send(message);
-    }
-  };
-
-  const set_colormap_choice = (value) => {
-    if (websocket.readyState === WebSocket.OPEN) {
-      dispatch({
-        type: 'write',
-        path: 'renderingState/colormap_choice',
-        data: value,
-      });
-      const cmd = 'write';
-      const path = 'renderingState/colormap_choice';
-      const data = {
-        type: cmd,
-        path,
-        data: value,
-      };
-      const message = msgpack.encode(data);
-      websocket.send(message);
-    }
-  };
-
-  const [display_render_time, set_display_render_time] = useState(false);
-
-  const receive_temporal_dist = e => {
-      const msg = msgpack.decode(new Uint8Array(e.data));
-      if (msg.path === "/model/has_temporal_distortion") {
-        set_display_render_time(msg.data === "true");
-        websocket.removeEventListener("message", receive_temporal_dist);
+  const guiSetQueue = customGui.guiSetQueue;
+  React.useEffect(() => {
+    // This line is important to prevent looping
+    if (Object.keys(guiSetQueue).length === 0) return;
+    Object.entries(guiSetQueue).forEach(([key, value]) => {
+      if (guiNames.includes(key)) {
+        set({ [key]: value }); // call the leva function for setting the value of the element
       }
-  }
-  websocket.addEventListener('message', receive_temporal_dist);
+    });
+    //  delete the queue
+    dispatch({
+      type: 'write',
+      path: 'custom_gui/guiSetQueue',
+      data: {},
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [guiSetQueue, set, guiNames]);
 
-  const set_render_time = (value) => {
-    if (websocket.readyState === WebSocket.OPEN) {
-      const path = 'renderingState/render_time';
-      dispatch({
-        type: 'write',
-        path,
-        data: value,
-      });
-      const cmd = 'write';
-      const data = {
-        type: cmd,
-        path,
-        data: value,
-      };
-      const message = msgpack.encode(data);
-      websocket.send(message);
-    }
-  };
-
-  const [, setControls] = useControls(
-    () => ({
-      // training speed
-      'Train Speed': buttonGroup({
-        Fast: () =>
-          setControls({ target_train_util: 0.9, max_resolution: 512 }),
-        Balanced: () =>
-          setControls({ target_train_util: 0.7, max_resolution: 1024 }),
-        Slow: () =>
-          setControls({ target_train_util: 0.1, max_resolution: 2048 }),
-      }),
-      // output_options
-      output_options: {
-        label: 'Output Render',
-        options: [...new Set(outputOptions)],
-        value: outputChoice,
-        onChange: (v) => {
-          set_output_choice(v);
-        },
-      },
-      // colormap_options
-      colormap_options: {
-        label: 'Colormap',
-        options: colormapOptions,
-        value: colormapChoice,
-        onChange: (v) => {
-          set_colormap_choice(v);
-        },
-        disabled: colormapOptions.length === 1,
-      },
-      // Dynamic Resolution
-      target_train_util: {
-        label: 'Train Util.',
-        value: target_train_util,
-        min: 0,
-        max: 1,
-        step: 0.05,
-        onChange: (v) => {
-          set_target_train_util(v);
-        },
-      },
-      // resolution
-      max_resolution: {
-        label: 'Max Res.',
-        value: max_resolution,
-        min: 256,
-        max: 2048,
-        step: 1,
-        onChange: (v) => {
-          set_max_resolution(v);
-        },
-      },
-      '  ': buttonGroup({
-        '256px': () => setControls({ max_resolution: 256 }),
-        '512px': () => setControls({ max_resolution: 512 }),
-        '1024px': () => setControls({ max_resolution: 1024 }),
-        '2048px': () => setControls({ max_resolution: 2048 }),
-      }),
-      // Dynamic NeRF rendering time
-      ...(display_render_time ? {render_time: {
-        label: 'Render Timestep',
-        value: render_time,
-        min: 0,
-        max: 1,
-        step: 0.01,
-        onChange: (v) => {
-          set_render_time(v);
-        },
-      }} : {}),
-    }),
-    [
-      outputOptions,
-      outputChoice,
-      colormapOptions,
-      colormapChoice,
-      max_resolution,
-      target_train_util,
-      render_time,
-      display_render_time,
-      websocket, // need to re-render when websocket changes to use the new websocket
-    ],
+  // Leva theming is a bit limited, so we hack at styles here...
+  return (
+    <LevaPanel
+      fill
+      flat
+      titleBar={false}
+      store={levaStore}
+      theme={LevaTheme}
+      hideCopyButton
+    />
   );
+}
 
-  useEffect(() => {
-    setControls({ max_resolution });
-    setControls({ output_options: outputChoice });
-    setControls({ colormap_options: colormapChoice });
-  }, [
-    setControls,
-    outputOptions,
-    outputChoice,
-    colormapOptions,
-    colormapChoice,
-    max_resolution,
-    target_train_util,
-    render_time,
-    display_render_time,
-  ]);
-
-  return null;
+export function RenderControls() {
+  return (
+    <div className="Leva-container">
+      <Box
+        component="div"
+        sx={{
+          "& input[type='checkbox']~label svg path": {
+            stroke: '#222831 !important',
+          },
+          '& button': {
+            backgroundColor: '#393E46 !important',
+            height: '2em',
+          },
+        }}
+      >
+        <Leva
+          className="Leva-panel"
+          theme={LevaTheme}
+          titleBar={false}
+          fill
+          flat
+        />
+        <CustomLeva />
+      </Box>
+    </div>
+  );
 }

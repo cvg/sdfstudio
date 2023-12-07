@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -53,6 +53,7 @@ class DNeRF(DataParser):
     """DNeRF Dataset"""
 
     config: DNeRFDataParserConfig
+    includes_time: bool = True
 
     def __init__(self, config: DNeRFDataParserConfig):
         super().__init__(config=config)
@@ -102,7 +103,11 @@ class DNeRF(DataParser):
         )
 
         dataparser_outputs = DataparserOutputs(
-            image_filenames=image_filenames, cameras=cameras, alpha_color=alpha_color_tensor, scene_box=scene_box
+            image_filenames=image_filenames,
+            cameras=cameras,
+            alpha_color=alpha_color_tensor,
+            scene_box=scene_box,
+            dataparser_scale=self.scale_factor,
         )
 
         return dataparser_outputs

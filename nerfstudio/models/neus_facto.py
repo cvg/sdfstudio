@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,15 +13,16 @@
 # limitations under the License.
 
 """
-Implementation of VolSDF.
+Implementation of NeuS similar to nerfacto where proposal sampler is used.
+Based on SDFStudio https://github.com/autonomousvision/sdfstudio/
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import List, Type, Tuple, Dict
-import numpy as np
+from typing import Any, Dict, List, Optional, Tuple, Type
 
+import numpy as np
 import torch
 from torch.nn import Parameter
 
@@ -32,19 +33,22 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackLocation,
 )
 from nerfstudio.field_components.field_heads import FieldHeadNames
-from nerfstudio.models.neus import NeuSModel, NeuSModelConfig
 from nerfstudio.fields.density_fields import HashMLPDensityField
 from nerfstudio.model_components.losses import interlevel_loss
-from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler
+from nerfstudio.model_components.ray_samplers import (
+    ProposalNetworkSampler,
+    UniformSampler,
+)
+from nerfstudio.models.neus import NeuSModel, NeuSModelConfig
 from nerfstudio.utils import colormaps
 
 
 @dataclass
 class NeuSFactoModelConfig(NeuSModelConfig):
-    """UniSurf Model Config"""
+    """NeusFacto Model Config"""
 
     _target: Type = field(default_factory=lambda: NeuSFactoModel)
-    num_proposal_samples_per_ray: Tuple[int] = (256, 96)
+    num_proposal_samples_per_ray: Tuple[int, ...] = (256, 96)
     """Number of samples per ray for the proposal network."""
     num_neus_samples_per_ray: int = 48
     """Number of samples per ray for the nerf network."""
@@ -76,7 +80,10 @@ class NeuSFactoModelConfig(NeuSModelConfig):
 
 
 class NeuSFactoModel(NeuSModel):
-    """NeuS facto model
+    """NeuSFactoModel extends NeuSModel for a more efficient sampling strategy.
+
+    The model improves the rendering speed and quality by incorporating a learning-based
+    proposal distribution to guide the sampling process.(similar to mipnerf-360)
 
     Args:
         config: NeuS configuration to instantiate model
@@ -85,7 +92,7 @@ class NeuSFactoModel(NeuSModel):
     config: NeuSFactoModelConfig
 
     def populate_modules(self):
-        """Set the fields and modules."""
+        """Instantiate modules and fields, including proposal networks."""
         super().populate_modules()
 
         self.density_fns = []
@@ -112,18 +119,21 @@ class NeuSFactoModel(NeuSModel):
             self.density_fns.extend([network.density_fn for network in self.proposal_networks])
 
         # update proposal network every iterations
-        update_schedule = lambda step: -1
-        
+        def update_schedule(_):
+            return -1
+
+        initial_sampler = UniformSampler(single_jitter=self.config.use_single_jitter)
         self.proposal_sampler = ProposalNetworkSampler(
             num_nerf_samples_per_ray=self.config.num_neus_samples_per_ray,
             num_proposal_samples_per_ray=self.config.num_proposal_samples_per_ray,
             num_proposal_network_iterations=self.config.num_proposal_iterations,
-            use_uniform_sampler=True,
             single_jitter=self.config.use_single_jitter,
             update_sched=update_schedule,
+            initial_sampler=initial_sampler,
         )
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
+        """Return a dictionary with the parameters of the proposal networks."""
         param_groups = super().get_param_groups()
         param_groups["proposal_networks"] = list(self.proposal_networks.parameters())
         return param_groups
@@ -137,10 +147,13 @@ class NeuSFactoModel(NeuSModel):
             # anneal the weights of the proposal network before doing PDF sampling
             N = self.config.proposal_weights_anneal_max_num_iters
 
-            def set_anneal(step):
+            def set_anneal(step: int):
                 # https://arxiv.org/pdf/2111.12077.pdf eq. 18
                 train_frac = np.clip(step / N, 0, 1)
-                bias = lambda x, b: (b * x) / ((b - 1) * x + 1)
+
+                def bias(x, b):
+                    return b * x / ((b - 1) * x + 1)
+
                 anneal = bias(train_frac, self.config.proposal_weights_anneal_slope)
                 self.proposal_sampler.set_anneal(anneal)
 
@@ -161,7 +174,8 @@ class NeuSFactoModel(NeuSModel):
 
         return callbacks
 
-    def sample_and_forward_field(self, ray_bundle: RayBundle):
+    def sample_and_forward_field(self, ray_bundle: RayBundle) -> Dict[str, Any]:
+        """Sample rays using proposal networks and compute the corresponding field outputs."""
         ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
 
         field_outputs = self.field(ray_samples, return_alphas=True)
@@ -183,7 +197,10 @@ class NeuSFactoModel(NeuSModel):
         }
         return samples_and_field_outputs
 
-    def get_loss_dict(self, outputs, batch, metrics_dict=None):
+    def get_loss_dict(
+        self, outputs: Dict[str, Any], batch: Dict[str, Any], metrics_dict: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Compute the loss dictionary, including interlevel loss for proposal networks."""
         loss_dict = super().get_loss_dict(outputs, batch, metrics_dict)
 
         if self.training:
@@ -194,8 +211,9 @@ class NeuSFactoModel(NeuSModel):
         return loss_dict
 
     def get_image_metrics_and_images(
-        self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
+        self, outputs: Dict[str, Any], batch: Dict[str, Any]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
+        """Compute image metrics and images, including the proposal depth for each iteration."""
         metrics_dict, images_dict = super().get_image_metrics_and_images(outputs, batch)
         for i in range(self.config.num_proposal_iterations):
             key = f"prop_depth_{i}"

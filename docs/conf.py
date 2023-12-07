@@ -1,4 +1,3 @@
-# pylint: skip-file
 # Configuration file for the Sphinx documentation builder.
 #
 # This file only contains a selection of the most common options. For a full
@@ -16,7 +15,6 @@ import sys
 
 sys.path.insert(0, os.path.abspath(".."))
 sys.path.append(os.path.abspath("./_pygments"))
-import nerfstudio.configs.base_config
 
 # -- Project information -----------------------------------------------------
 
@@ -42,6 +40,7 @@ extensions = [
     "sphinx_design",
     "sphinx.ext.mathjax",
     "sphinxext.opengraph",
+    "sphinx.ext.viewcode",
 ]
 
 # List of patterns, relative to source directory, that match files and
@@ -67,7 +66,7 @@ html_js_files = [
 # -- MYST configs -----------------------------------------------------------
 
 # To enable admonitions:
-myst_enable_extensions = ["amsmath", "colon_fence", "deflist", "dollarmath", "html_image"]
+myst_enable_extensions = ["amsmath", "colon_fence", "deflist", "dollarmath", "html_image", "substitution"]
 
 
 # -- Options for open graph -------------------------------------------------

@@ -14,6 +14,35 @@ SDFStudio is a unified and modular framework for neural implicit surface reconst
 
 **2022.12.28**: Support [Neural RGB-D Surface Reconstruction](https://dazinovic.github.io/neural-rgbd-surface-reconstruction/).
 
+## Sponsors
+Sponsors of this work includes [Luma AI](https://lumalabs.ai/) and the [BAIR commons](https://bcommons.berkeley.edu/home).
+
+<p align="left">
+    <a href="https://lumalabs.ai/">
+        <!-- pypi-strip -->
+        <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/_static/imgs/luma_dark.png">
+        <source media="(prefers-color-scheme: light)" srcset="docs/_static/imgs/luma_light.png">
+        <!-- /pypi-strip -->
+        <img alt="Luma AI" src="docs/_static/imgs/luma_light.png" width="300">
+        <!-- pypi-strip -->
+        </picture>
+        <!-- /pypi-strip -->
+    </a>
+    <a href="https://bcommons.berkeley.edu/home">
+        <!-- pypi-strip -->
+        <picture>
+        <source media="(prefers-color-scheme: dark)" srcset="docs/_static/imgs/bair_dark.png">
+        <source media="(prefers-color-scheme: light)" srcset="docs/_static/imgs/bair_light.png">
+        <!-- /pypi-strip -->
+        <img alt="BAIR" src="docs/_static/imgs/bair_light.png" width="300">
+        <!-- pypi-strip -->
+        </picture>
+        <!-- /pypi-strip -->
+    </a>
+</p>
+
+
 # Quickstart
 
 ## 1. Installation: Setup the environment
@@ -36,11 +65,25 @@ python -m pip install --upgrade pip
 
 ### Dependencies
 
-Install pytorch with CUDA (this repo has been tested with CUDA 11.3) and [tiny-cuda-nn](https://github.com/NVlabs/tiny-cuda-nn)
+Install PyTorch with CUDA (this repo has been tested with CUDA 11.7 and CUDA 11.8) and [tiny-cuda-nn](https://github.com/NVlabs/tiny-cuda-nn).
+`cuda-toolkit` is required for building `tiny-cuda-nn`.
+
+For CUDA 11.7:
 
 ```bash
-pip install torch==1.12.1+cu113 torchvision==0.13.1+cu113 -f https://download.pytorch.org/whl/torch_stable.html
-pip install git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+pip install torch==2.0.1+cu117 torchvision==0.15.2+cu117 --extra-index-url https://download.pytorch.org/whl/cu117
+
+conda install -c "nvidia/label/cuda-11.7.1" cuda-toolkit
+pip install ninja git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
+```
+
+For CUDA 11.8:
+
+```bash
+pip install torch==2.0.1+cu118 torchvision==0.15.2+cu118 --extra-index-url https://download.pytorch.org/whl/cu118
+
+conda install -c "nvidia/label/cuda-11.8.0" cuda-toolkit
+pip install ninja git+https://github.com/NVlabs/tiny-cuda-nn/#subdirectory=bindings/torch
 ```
 
 ### Installing SDFStudio
@@ -204,11 +247,13 @@ Please refer to the [datasets](docs/sdfstudio-data.md) and [data format](https:/
 
 # Citation
 
+You can find a paper writeup of the framework on [arXiv](https://arxiv.org/abs/2302.04264).
+
 If you use this library or find the documentation useful for your research, please consider citing:
 
 ```bibtex
 @misc{Yu2022SDFStudio,
-    author    = {Yu, Zehao and Chen, Anpei and Antic, Bozidar and Peng, Songyou Peng and Bhattacharyya, Apratim 
+    author    = {Yu, Zehao and Chen, Anpei and Antic, Bozidar and Peng, Songyou Peng and Bhattacharyya, Apratim
                  and Niemeyer, Michael and Tang, Siyu and Sattler, Torsten and Geiger, Andreas},
     title     = {SDFStudio: A Unified Framework for Surface Reconstruction},
     year      = {2022},

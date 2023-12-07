@@ -1,3 +1,36 @@
+---
+myst:
+  substitutions:
+    luma: |
+      ```{image} _static/imgs/luma_light.png
+      :alt: Luma AI
+      :width: 300px
+      :class: only-light
+      :target: https://lumalabs.ai/
+      ```
+
+      ```{image} _static/imgs/luma_dark.png
+      :alt: Luma AI
+      :width: 300px
+      :class: only-dark
+      :target: https://lumalabs.ai/
+      ```
+    bair: |
+      ```{image} _static/imgs/bair_light.png
+      :alt: BAIR
+      :width: 300px
+      :class: only-light
+      :target: https://bcommons.berkeley.edu/home
+      ```
+
+      ```{image} _static/imgs/bair_dark.png
+      :alt: BAIR
+      :width: 300px
+      :class: only-dark
+      :target: https://bcommons.berkeley.edu/home
+      ```
+---
+
 ```{eval-rst}
 :og:description: Nerfstudio Documentation
 :og:image: https://assets.nerf.studio/opg.png
@@ -25,18 +58,19 @@
 
 <br/>
 
-Nerfstudio provides a simple API that allows for a simplified end-to-end process of creating, training, and visualizing NeRFs.
-The library supports an **interpretable implementation of NeRFs by modularizing each component.**
-With modular NeRF components, we hope to create a user-friendly experience in exploring the technology.
-Nerfstudio is a contributor-friendly repo with the goal of building a community where users can easily build upon each other's contributions.
+Nerfstudio provides a simple API that allows for a simplified end-to-end process of creating, training, and testing NeRFs.
+The library supports a **more interpretable implementation of NeRFs by modularizing each component.**
+With more modular NeRFs, we hope to create a more user-friendly experience in exploring the technology.
 
-It's as simple as plug and play with nerfstudio!
+This is a contributor-friendly repo with the goal of building a community where users can more easily build upon each other's contributions.
+Nerfstudio initially launched as an opensource project by Berkeley students in [KAIR lab](https://people.eecs.berkeley.edu/~kanazawa/index.html#kair) at [Berkeley AI Research (BAIR)](https://bair.berkeley.edu/) in October 2022 as a part of a research project ([paper](https://arxiv.org/abs/2302.04264)). It is currently developed by Berkeley students and community contributors.
 
-On top of our API, we are committed to providing learning resources to help you understand the basics of (if you're just getting started), and keep up-to-date with (if you're a seasoned veteran) all things NeRF.
-As researchers, we know just how hard it is to get onboarded with this next-gen technology. So we're here to help with tutorials, documentation, and more!
+We are committed to providing learning resources to help you understand the basics of (if you're just getting started), and keep up-to-date with (if you're a seasoned veteran) all things NeRF. As researchers, we know just how hard it is to get onboarded with this next-gen technology. So we're here to help with tutorials, documentation, and more!
 
-Finally, have feature requests? Want to add your brand-spankin'-new NeRF model? Have a new dataset? **We welcome any and all [contributions](reference/contributing)!**
+Have feature requests? Want to add your brand-spankin'-new NeRF model? Have a new dataset? **We welcome [contributions](reference/contributing)!**
 Please do not hesitate to reach out to the nerfstudio team with any questions via [Discord](https://discord.gg/uMbNqcraFc).
+
+Have feedback? We'd love for you to fill out our [Nerfstudio Feedback Form](https://forms.gle/sqN5phJN7LfQVwnP9) if you want to let us know who you are, why you are interested in Nerfstudio, or provide any feedback!
 
 We hope nerfstudio enables you to build faster 🔨 learn together 📚 and contribute to our NeRF community 💖.
 
@@ -57,6 +91,14 @@ Contributing<reference/contributing>
 
 ```{toctree}
 :hidden:
+:caption: Extensions
+extensions/blender_addon
+extensions/unreal_engine
+extensions/sdfstudio
+```
+
+```{toctree}
+:hidden:
 :caption: NeRFology
 
 nerfology/methods/index
@@ -67,8 +109,9 @@ nerfology/model_components/index
 :hidden:
 :caption: Developer Guides
 
+developer_guides/new_methods
 developer_guides/pipelines/index
-developer_guides/viewer/viewer_overview
+developer_guides/viewer/index
 developer_guides/config
 developer_guides/debugging_tools/index
 ```
@@ -90,16 +133,26 @@ This documentation is organized into 3 parts:
 
 ## Supported Methods
 
-- [**Nerfacto**](https://github.com/nerfstudio-project/nerfstudio/blob/master/nerfstudio/models/nerfacto.py): our de facto NeRF method combines modules focused on quality with modules focused on faster rendering. Nerfstudio easily lets us experiment with the best of both worlds!
-- [NeRF](https://www.matthewtancik.com/nerf): Representing Scenes as Neural Radiance Fields for View Synthesis
-- [Instant NGP](https://nvlabs.github.io/instant-ngp/): Instant Neural Graphics Primitives with a Multiresolution Hash Encoding
-- [Mipnerf](https://jonbarron.info/mipnerf/): A Multiscale Representation for Anti-Aliasing Neural Radiance Fields
-- [NerfW](https://nerf-w.github.io/): Neural Radiance Fields for Unconstrained Photo Collections
-- [Semantic NeRF](https://shuaifengzhi.com/Semantic-NeRF/): In-Place Scene Labelling and Understanding with Implicit Scene Representation
+### Included Methods
 
-We'll be constantly growing this list! So make sure to check back in to see our updates.
+- [**Nerfacto**](nerfology/methods/nerfacto.md): Recommended method, integrates mutiple methods into one.
+- [Instant-NGP](nerfology/methods/instant_ngp.md): Instant Neural Graphics Primitives with a Multiresolution Hash Encoding
+- [NeRF](nerfology/methods/nerf.md): OG Neural Radiance Fields
+- [Mip-NeRF](nerfology/methods/mipnerf.md): A Multiscale Representation for Anti-Aliasing Neural Radiance Fields
+- [TensoRF](nerfology/methods/tensorf.md): Tensorial Radiance Fields
 
-**Eager to contribute?** We'd love to see you use nerfstudio in implementing new (or even existing) methods! Feel free to contact us directly or view our [Contributor's Guide](reference/contributing) to see how you can get your model on this list!
+(third_party_methods)=
+
+### Third-party Methods
+
+- [Instruct-NeRF2NeRF](nerfology/methods/in2n.md): Editing 3D Scenes with Instructions
+- [K-Planes](nerfology/methods/kplanes.md): Unified 3D and 4D Radiance Fields
+- [LERF](nerfology/methods/lerf.md): Language Embedded Radiance Fields
+- [Nerfbusters](nerfology/methods/nerfbusters.md): Removing Ghostly Artifacts from Casually Captured NeRFs
+- [NeRFPlayer](nerfology/methods/nerfplayer.md): 4D Radiance Fields by Streaming Feature Channels
+- [Tetra-NeRF](nerfology/methods/tetranerf.md): Representing Neural Radiance Fields Using Tetrahedra
+
+**Eager to contribute a method?** We'd love to see you use nerfstudio in implementing new (or even existing) methods! Please view our {ref}`guide<own_method_docs>` for more details about how to add to this list!
 
 ## Quicklinks
 
@@ -108,13 +161,14 @@ We'll be constantly growing this list! So make sure to check back in to see our 
 | [Github](https://github.com/nerfstudio-project/nerfstudio) | Official Github Repo   |
 | [Discord](https://discord.gg/RyVk6w5WWP)                   | Join Discord Community |
 | [Viewer](https://viewer.nerf.studio/)                      | Web-based Nerf Viewer  |
+| [Feedback Form](https://forms.gle/sqN5phJN7LfQVwnP9)       | Provide Nerfstudio Feedback |
 
-### How-to Videos
+## Sponsors
+Sponsors of this work includes [Luma AI](https://lumalabs.ai/) and the [BAIR commons](https://bcommons.berkeley.edu/home).
 
-|                                                                 |                                                           |
-| --------------------------------------------------------------- | --------------------------------------------------------- |
-| [Using the Viewer](https://www.youtube.com/watch?v=nSFsugarWzk) | Demo video on how to run nerfstudio and use the viewer.   |
-| [Using Record3D](https://www.youtube.com/watch?v=XwKq7qDQCQk)   | Demo video on how to run nerfstudio without using COLMAP. |
+|          |          |
+| -------- | -------- |
+| {{luma}} | {{bair}} |
 
 ## Built On
 
@@ -154,16 +208,22 @@ We'll be constantly growing this list! So make sure to check back in to see our 
 
 ## Citation
 
+You can find a paper writeup of the framework on [arXiv](https://arxiv.org/abs/2302.04264).
+
 If you use this library or find the documentation useful for your research, please consider citing:
 
 ```none
-@misc{nerfstudio,
-      title={Nerfstudio: A Framework for Neural Radiance Field Development},
-      author={Matthew Tancik*, Ethan Weber*, Evonne Ng*, Ruilong Li, Brent Yi,
-              Terrance Wang, Alexander Kristoffersen, Jake Austin, Kamyar Salahi,
-              Abhik Ahuja, David McAllister, Angjoo Kanazawa},
-      year={2022},
-      url={https://github.com/nerfstudio-project/nerfstudio},
+@inproceedings{nerfstudio,
+	title        = {Nerfstudio: A Modular Framework for Neural Radiance Field Development},
+	author       = {
+		Tancik, Matthew and Weber, Ethan and Ng, Evonne and Li, Ruilong and Yi, Brent
+		and Kerr, Justin and Wang, Terrance and Kristoffersen, Alexander and Austin,
+		Jake and Salahi, Kamyar and Ahuja, Abhik and McAllister, David and Kanazawa,
+		Angjoo
+	},
+	year         = 2023,
+	booktitle    = {ACM SIGGRAPH 2023 Conference Proceedings},
+	series       = {SIGGRAPH '23}
 }
 ```
 
@@ -172,3 +232,14 @@ If you use this library or find the documentation useful for your research, plea
 <a href="https://github.com/nerfstudio-project/nerfstudio/graphs/contributors">
   <img src="https://contrib.rocks/image?repo=nerfstudio-project/nerfstudio" />
 </a>
+
+## Maintainers
+
+|                                                 | Nerfstudio Discord | Affiliation                          |
+| ----------------------------------------------- | ------------------ | ------------------------------------ |
+| [Justin Kerr](https://kerrj.github.io/)         | justin.kerr        | UC Berkeley                          |
+| [Jonáš Kulhánek](https://jkulhanek.com/)        | jkulhanek          | Czech Technical University in Prague |
+| [Matt Tancik](https://www.matthewtancik.com)    | tancik             | Luma AI                              |
+| [Matias Turkulainen](https://maturk.github.io/) | maturk             | ETH Zurich                           |
+| [Ethan Weber](https://ethanweber.me/)           | ethanweber         | UC Berkeley                          |
+| [Brent Yi](https://github.com/brentyi)          | brent              | UC Berkeley                          |

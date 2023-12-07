@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,11 +18,11 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, Tuple, Type
+from typing import Dict, Tuple, Type, Literal
 
+import imageio
 import numpy as np
 import torch
-from rich.console import Console
 
 from nerfstudio.cameras import camera_utils
 from nerfstudio.cameras.cameras import Cameras, CameraType
@@ -32,9 +32,14 @@ from nerfstudio.data.dataparsers.base_dataparser import (
     DataparserOutputs,
 )
 from nerfstudio.data.scene_box import SceneBox
+from nerfstudio.data.utils.dataparsers_utils import (
+    get_train_eval_split_filename,
+    get_train_eval_split_fraction,
+    get_train_eval_split_interval,
+    get_train_eval_split_all,
+)
 from nerfstudio.utils.io import load_from_json
-
-CONSOLE = Console(width=120)
+from nerfstudio.utils.rich_utils import CONSOLE
 
 
 @dataclass
@@ -44,11 +49,21 @@ class InstantNGPDataParserConfig(DataParserConfig):
     _target: Type = field(default_factory=lambda: InstantNGP)
     """target class to instantiate"""
     data: Path = Path("data/ours/posterv2")
-    """Directory specifying location of data."""
-    scale_factor: float = 1.0
-    """How much to scale the camera origins by."""
-    scene_scale: float = 0.33
+    """Directory or explicit json file path specifying location of data."""
+    scene_scale: float = 0.3333
     """How much to scale the scene."""
+    eval_mode: Literal["fraction", "filename", "interval", "all"] = "fraction"
+    """
+    The method to use for splitting the dataset into train and eval.
+    Fraction splits based on a percentage for train and the remaining for eval.
+    Filename splits based on filenames containing train/eval.
+    Interval uses every nth frame for eval.
+    All uses all the images for any split.
+    """
+    train_split_fraction: float = 0.9
+    """The percentage of the dataset to use for training. Only used when eval_mode is train-split-fraction."""
+    eval_interval: int = 8
+    """The interval between frames to use for eval. Only used when eval_mode is eval-interval."""
 
 
 @dataclass
@@ -58,38 +73,94 @@ class InstantNGP(DataParser):
     config: InstantNGPDataParserConfig
 
     def _generate_dataparser_outputs(self, split="train"):
+        if self.config.data.suffix == ".json":
+            meta = load_from_json(self.config.data)
+            data_dir = self.config.data.parent
+        else:
+            meta = load_from_json(self.config.data / "transforms.json")
+            data_dir = self.config.data
 
-        meta = load_from_json(self.config.data / "transforms.json")
         image_filenames = []
+        mask_filenames = []
         poses = []
         num_skipped_image_filenames = 0
         for frame in meta["frames"]:
-            fname = self.config.data / Path(frame["file_path"])
-            if not fname:
+            fname = data_dir / Path(frame["file_path"])
+            # search for png file
+            if not fname.exists():
+                fname = data_dir / Path(frame["file_path"] + ".png")
+            if not fname.exists():
+                CONSOLE.log(f"couldn't find {fname} image")
                 num_skipped_image_filenames += 1
             else:
+                if "w" not in meta:
+                    img_0 = imageio.imread(fname)
+                    h, w = img_0.shape[:2]
+                    meta["w"] = w
+                    if "h" in meta:
+                        meta_h = meta["h"]
+                        assert meta_h == h, f"height of image dont not correspond metadata {h} != {meta_h}"
+                    else:
+                        meta["h"] = h
                 image_filenames.append(fname)
                 poses.append(np.array(frame["transform_matrix"]))
+                if "mask_path" in frame:
+                    mask_fname = data_dir / Path(frame["mask_path"])
+                    mask_filenames.append(mask_fname)
         if num_skipped_image_filenames >= 0:
             CONSOLE.print(f"Skipping {num_skipped_image_filenames} files in dataset split {split}.")
         assert (
             len(image_filenames) != 0
         ), """
-        No image files found. 
+        No image files found.
         You should check the file_paths in the transforms.json file to make sure they are correct.
         """
         poses = np.array(poses).astype(np.float32)
         poses[:, :3, 3] *= self.config.scene_scale
 
+        # find train and eval indices based on the eval_mode specified
+        if self.config.eval_mode == "fraction":
+            i_train, i_eval = get_train_eval_split_fraction(image_filenames, self.config.train_split_fraction)
+        elif self.config.eval_mode == "filename":
+            i_train, i_eval = get_train_eval_split_filename(image_filenames)
+        elif self.config.eval_mode == "interval":
+            i_train, i_eval = get_train_eval_split_interval(image_filenames, self.config.eval_interval)
+        elif self.config.eval_mode == "all":
+            CONSOLE.log(
+                "[yellow] Be careful with '--eval-mode=all'. If using camera optimization, the cameras may diverge in the current implementation, giving unpredictable results."
+            )
+            i_train, i_eval = get_train_eval_split_all(image_filenames)
+        else:
+            raise ValueError(f"Unknown eval mode {self.config.eval_mode}")
+
+        if split == "train":
+            indices = i_train
+        elif split in ["val", "test"]:
+            indices = i_eval
+        else:
+            raise ValueError(f"Unknown dataparser split {split}")
+        # Choose image_filenames and poses based on split, but after auto orient and scaling the poses.
+        image_filenames = [image_filenames[i] for i in indices]
+        mask_filenames = [mask_filenames[i] for i in indices] if len(mask_filenames) > 0 else []
+
+        idx_tensor = torch.tensor(indices, dtype=torch.long)
+        poses = poses[idx_tensor]
+
         camera_to_world = torch.from_numpy(poses[:, :3])  # camera to world transform
 
         distortion_params = camera_utils.get_distortion_params(
-            k1=float(meta["k1"]), k2=float(meta["k2"]), p1=float(meta["p1"]), p2=float(meta["p2"])
+            k1=float(meta.get("k1", 0)),
+            k2=float(meta.get("k2", 0)),
+            k3=float(meta.get("k3", 0)),
+            k4=float(meta.get("k4", 0)),
+            p1=float(meta.get("p1", 0)),
+            p2=float(meta.get("p2", 0)),
         )
 
         # in x,y,z order
         # assumes that the scene is centered at the origin
-        aabb_scale = meta["aabb_scale"]
+        aabb_scale = 0.5 * meta.get("aabb_scale", 1)
+
         scene_box = SceneBox(
             aabb=torch.tensor(
                 [[-aabb_scale, -aabb_scale, -aabb_scale], [aabb_scale, aabb_scale, aabb_scale]], dtype=torch.float32
@@ -98,16 +169,22 @@ class InstantNGP(DataParser):
 
         fl_x, fl_y = InstantNGP.get_focal_lengths(meta)
 
+        w, h = meta["w"], meta["h"]
+
+        camera_type = CameraType.PERSPECTIVE
+        if meta.get("is_fisheye", False):
+            camera_type = CameraType.FISHEYE
+
         cameras = Cameras(
             fx=float(fl_x),
             fy=float(fl_y),
-            cx=float(meta["cx"]),
-            cy=float(meta["cy"]),
+            cx=float(meta.get("cx", 0.5 * w)),
+            cy=float(meta.get("cy", 0.5 * h)),
             distortion_params=distortion_params,
-            height=int(meta["h"]),
-            width=int(meta["w"]),
+            height=int(h),
+            width=int(w),
             camera_to_worlds=camera_to_world,
-            camera_type=CameraType.PERSPECTIVE,
+            camera_type=camera_type,
         )
 
         # TODO(ethan): add alpha background color
@@ -115,6 +192,8 @@ class InstantNGP(DataParser):
             image_filenames=image_filenames,
             cameras=cameras,
             scene_box=scene_box,
+            mask_filenames=mask_filenames if len(mask_filenames) > 0 else None,
+            dataparser_scale=self.config.scene_scale,
         )
 
         return dataparser_outputs
@@ -139,12 +218,15 @@ class InstantNGP(DataParser):
         elif "camera_angle_x" in meta:
             fl_x = fov_to_focal_length(meta["camera_angle_x"], meta["w"])
 
-        if "fl_y" in meta:
-            fl_y = meta["fl_y"]
-        elif "y_fov" in meta:
-            fl_y = fov_to_focal_length(np.deg2rad(meta["y_fov"]), meta["h"])
-        elif "camera_angle_y" in meta:
-            fl_y = fov_to_focal_length(meta["camera_angle_y"], meta["h"])
+        if "camera_angle_y" not in meta or "y_fov" not in meta:
+            fl_y = fl_x
+        else:
+            if "fl_y" in meta:
+                fl_y = meta["fl_y"]
+            elif "y_fov" in meta:
+                fl_y = fov_to_focal_length(np.deg2rad(meta["y_fov"]), meta["h"])
+            elif "camera_angle_y" in meta:
+                fl_y = fov_to_focal_length(meta["camera_angle_y"], meta["h"])
 
         if fl_x == 0 or fl_y == 0:
             raise AttributeError("Focal length cannot be calculated from transforms.json (missing fields).")

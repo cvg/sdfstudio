@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,13 +19,13 @@ TensorRF implementation.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, List, Tuple, Type
+from typing import Dict, List, Literal, Tuple, Type, cast
 
 import numpy as np
 import torch
 from torch.nn import Parameter
-from torchmetrics import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
+from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 
 from nerfstudio.cameras.rays import RayBundle
@@ -35,10 +35,15 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackAttributes,
     TrainingCallbackLocation,
 )
-from nerfstudio.field_components.encodings import NeRFEncoding, TensorVMEncoding
+from nerfstudio.field_components.encodings import (
+    NeRFEncoding,
+    TensorCPEncoding,
+    TensorVMEncoding,
+    TriplaneEncoding,
+)
 from nerfstudio.field_components.field_heads import FieldHeadNames
 from nerfstudio.fields.tensorf_field import TensoRFField
-from nerfstudio.model_components.losses import MSELoss
+from nerfstudio.model_components.losses import MSELoss, tv_loss, scale_gradients_by_distance_squared
 from nerfstudio.model_components.ray_samplers import PDFSampler, UniformSampler
 from nerfstudio.model_components.renderers import (
     AccumulationRenderer,
@@ -48,6 +53,7 @@ from nerfstudio.model_components.renderers import (
 from nerfstudio.model_components.scene_colliders import AABBBoxCollider
 from nerfstudio.models.base_model import Model, ModelConfig
 from nerfstudio.utils import colormaps, colors, misc
+from nerfstudio.cameras.camera_optimizers import CameraOptimizer, CameraOptimizerConfig
 
 
 @dataclass
@@ -62,16 +68,34 @@ class TensoRFModelConfig(ModelConfig):
     """final render resolution"""
     upsampling_iters: Tuple[int, ...] = (2000, 3000, 4000, 5500, 7000)
     """specifies a list of iteration step numbers to perform upsampling"""
-    loss_coefficients: Dict[str, float] = to_immutable_dict({"rgb_loss": 1.0})
+    loss_coefficients: Dict[str, float] = to_immutable_dict(
+        {
+            "rgb_loss": 1.0,
+            "tv_reg_density": 1e-3,
+            "tv_reg_color": 1e-4,
+            "l1_reg": 5e-4,
+        }
+    )
     """Loss specific weights."""
-    num_samples: int = 256
+    num_samples: int = 50
     """Number of samples in field evaluation"""
+    num_uniform_samples: int = 200
+    """Number of samples in density evaluation"""
     num_den_components: int = 16
     """Number of components in density encoding"""
     num_color_components: int = 48
     """Number of components in color encoding"""
     appearance_dim: int = 27
     """Number of channels for color encoding"""
+    tensorf_encoding: Literal["triplane", "vm", "cp"] = "vm"
+    regularization: Literal["none", "l1", "tv"] = "l1"
+    """Regularization method used in tensorf paper"""
+    camera_optimizer: CameraOptimizerConfig = field(default_factory=lambda: CameraOptimizerConfig(mode="SO3xR3"))
+    """Config of the camera optimizer to use"""
+    use_gradient_scaling: bool = False
+    """Use gradient scaler where the gradients are lower for points closer to the camera."""
+    background_color: Literal["random", "last_sample", "black", "white"] = "white"
+    """Whether to randomize the background color."""
 
 
 class TensoRFModel(Model):
@@ -80,6 +104,8 @@ class TensoRFModel(Model):
     Args:
         config: TensoRF configuration to instantiate model
     """
+
+    config: TensoRFModelConfig
 
     def __init__(
         self,
@@ -109,12 +135,12 @@ class TensoRFModel(Model):
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes
     ) -> List[TrainingCallback]:
-
         # the callback that we want to run every X iterations after the training iteration
-        def reinitialize_optimizer(
-            self, training_callback_attributes: TrainingCallbackAttributes, step: int  # pylint: disable=unused-argument
-        ):
-            resolution = self.upsampling_steps.pop(0)
+        def reinitialize_optimizer(self, training_callback_attributes: TrainingCallbackAttributes, step: int):
+            assert training_callback_attributes.optimizers is not None
+            assert training_callback_attributes.pipeline is not None
+            index = self.upsampling_iters.index(step)
+            resolution = self.upsampling_steps[index]
 
             # upsample the position and direction grids
             self.field.density_encoding.upsample_grid(resolution)
@@ -129,9 +155,13 @@ class TensoRFModel(Model):
                 "optimizer"
             ].setup(params=enc)
             if optimizers_config["encodings"]["scheduler"]:
-                training_callback_attributes.optimizers.schedulers["encodings"] = optimizers_config["encodings"][
-                    "scheduler"
-                ].setup(optimizer=training_callback_attributes.optimizers.optimizers["encodings"], lr_init=lr_init)
+                training_callback_attributes.optimizers.schedulers["encodings"] = (
+                    optimizers_config["encodings"]["scheduler"]
+                    .setup()
+                    .get_scheduler(
+                        optimizer=training_callback_attributes.optimizers.optimizers["encodings"], lr_init=lr_init
+                    )
+                )
 
         callbacks = [
             TrainingCallback(
@@ -143,19 +173,53 @@ class TensoRFModel(Model):
         ]
         return callbacks
 
+    def update_to_step(self, step: int) -> None:
+        if step < self.upsampling_iters[0]:
+            return
+
+        new_iters = list(self.upsampling_iters) + [step + 1]
+        new_iters.sort()
+
+        index = new_iters.index(step + 1)
+        new_grid_resolution = self.upsampling_steps[index - 1]
+
+        self.field.density_encoding.upsample_grid(new_grid_resolution)  # type: ignore
+        self.field.color_encoding.upsample_grid(new_grid_resolution)  # type: ignore
+
     def populate_modules(self):
         """Set the fields and modules"""
         super().populate_modules()
 
         # setting up fields
-        density_encoding = TensorVMEncoding(
-            resolution=self.init_resolution,
-            num_components=self.num_den_components,
-        )
-        color_encoding = TensorVMEncoding(
-            resolution=self.init_resolution,
-            num_components=self.num_color_components,
-        )
+        if self.config.tensorf_encoding == "vm":
+            density_encoding = TensorVMEncoding(
+                resolution=self.init_resolution,
+                num_components=self.num_den_components,
+            )
+            color_encoding = TensorVMEncoding(
+                resolution=self.init_resolution,
+                num_components=self.num_color_components,
+            )
+        elif self.config.tensorf_encoding == "cp":
+            density_encoding = TensorCPEncoding(
+                resolution=self.init_resolution,
+                num_components=self.num_den_components,
+            )
+            color_encoding = TensorCPEncoding(
+                resolution=self.init_resolution,
+                num_components=self.num_color_components,
+            )
+        elif self.config.tensorf_encoding == "triplane":
+            density_encoding = TriplaneEncoding(
+                resolution=self.init_resolution,
+                num_components=self.num_den_components,
+            )
+            color_encoding = TriplaneEncoding(
+                resolution=self.init_resolution,
+                num_components=self.num_color_components,
+            )
+        else:
+            raise ValueError(f"Encoding {self.config.tensorf_encoding} not supported")
 
         feature_encoding = NeRFEncoding(in_dim=self.appearance_dim, num_frequencies=2, min_freq_exp=0, max_freq_exp=2)
         direction_encoding = NeRFEncoding(in_dim=3, num_frequencies=2, min_freq_exp=0, max_freq_exp=2)
@@ -173,11 +237,11 @@ class TensoRFModel(Model):
         )
 
         # samplers
-        self.sampler_uniform = UniformSampler(num_samples=self.config.num_samples, single_jitter=True)
-        self.sampler_pdf = PDFSampler(num_samples=self.config.num_samples // 2, single_jitter=True)
+        self.sampler_uniform = UniformSampler(num_samples=self.config.num_uniform_samples, single_jitter=True)
+        self.sampler_pdf = PDFSampler(num_samples=self.config.num_samples, single_jitter=True, include_original=False)
 
         # renderers
-        self.renderer_rgb = RGBRenderer(background_color=colors.WHITE)
+        self.renderer_rgb = RGBRenderer(background_color=self.config.background_color)
         self.renderer_accumulation = AccumulationRenderer()
         self.renderer_depth = DepthRenderer()
 
@@ -187,11 +251,20 @@ class TensoRFModel(Model):
         # metrics
         self.psnr = PeakSignalNoiseRatio(data_range=1.0)
         self.ssim = structural_similarity_index_measure
-        self.lpips = LearnedPerceptualImagePatchSimilarity()
+        self.lpips = LearnedPerceptualImagePatchSimilarity(normalize=True)
 
         # colliders
         if self.config.enable_collider:
             self.collider = AABBBoxCollider(scene_box=self.scene_box)
+
+        # regularizations
+        if self.config.tensorf_encoding == "cp" and self.config.regularization == "tv":
+            raise RuntimeError("TV reg not supported for CP decomposition")
+
+        # (optional) camera optimizer
+        self.camera_optimizer: CameraOptimizer = self.config.camera_optimizer.setup(
+            num_cameras=self.num_train_data, device="cpu"
+        )
 
     def get_param_groups(self) -> Dict[str, List[Parameter]]:
         param_groups = {}
@@ -204,11 +277,14 @@ class TensoRFModel(Model):
         param_groups["encodings"] = list(self.field.color_encoding.parameters()) + list(
             self.field.density_encoding.parameters()
         )
+        self.camera_optimizer.get_param_groups(param_groups=param_groups)
 
         return param_groups
 
     def get_outputs(self, ray_bundle: RayBundle):
         # uniform sampling
+        if self.training:
+            self.camera_optimizer.apply_to_raybundle(ray_bundle)
         ray_samples_uniform = self.sampler_uniform(ray_bundle)
         dens = self.field.get_density(ray_samples_uniform)
         weights = ray_samples_uniform.get_weights(dens)
@@ -222,6 +298,8 @@ class TensoRFModel(Model):
         field_outputs_fine = self.field.forward(
             ray_samples_pdf, mask=acc_mask, bg_color=colors.WHITE.to(weights.device)
         )
+        if self.config.use_gradient_scaling:
+            field_outputs_fine = scale_gradients_by_distance_squared(field_outputs_fine, ray_samples_pdf)
 
         weights_fine = ray_samples_pdf.get_weights(field_outputs_fine[FieldHeadNames.DENSITY])
 
@@ -242,11 +320,37 @@ class TensoRFModel(Model):
     def get_loss_dict(self, outputs, batch, metrics_dict=None) -> Dict[str, torch.Tensor]:
         # Scaling metrics by coefficients to create the losses.
         device = outputs["rgb"].device
-        image = batch["image"].to(device)
+        image = batch["image"][..., :3].to(device)
+        pred_image, image = self.renderer_rgb.blend_background_for_loss_computation(
+            pred_image=outputs["rgb"],
+            pred_accumulation=outputs["accumulation"],
+            gt_image=image,
+        )
 
-        rgb_loss = self.rgb_loss(image, outputs["rgb"])
+        rgb_loss = self.rgb_loss(image, pred_image)
 
         loss_dict = {"rgb_loss": rgb_loss}
+
+        if self.config.regularization == "l1":
+            l1_parameters = []
+            for parameter in self.field.density_encoding.parameters():
+                l1_parameters.append(parameter.view(-1))
+            loss_dict["l1_reg"] = torch.abs(torch.cat(l1_parameters)).mean()
+        elif self.config.regularization == "tv":
+            density_plane_coef = self.field.density_encoding.plane_coef
+            color_plane_coef = self.field.color_encoding.plane_coef
+            assert isinstance(color_plane_coef, torch.Tensor) and isinstance(
+                density_plane_coef, torch.Tensor
+            ), "TV reg only supported for TensoRF encoding types with plane_coef attribute"
+            loss_dict["tv_reg_density"] = tv_loss(density_plane_coef)
+            loss_dict["tv_reg_color"] = tv_loss(color_plane_coef)
+        elif self.config.regularization == "none":
+            pass
+        else:
+            raise ValueError(f"Regularization {self.config.regularization} not supported")
+
+        self.camera_optimizer.get_loss_dict(loss_dict)
+
         loss_dict = misc.scale_dict(loss_dict, self.config.loss_coefficients)
         return loss_dict
 
@@ -254,8 +358,10 @@ class TensoRFModel(Model):
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
     ) -> Tuple[Dict[str, float], Dict[str, torch.Tensor]]:
         image = batch["image"].to(outputs["rgb"].device)
+        image = self.renderer_rgb.blend_background(image)
         rgb = outputs["rgb"]
         acc = colormaps.apply_colormap(outputs["accumulation"])
+        assert self.config.collider_params is not None
         depth = colormaps.apply_depth_colormap(
             outputs["depth"],
             accumulation=outputs["accumulation"],
@@ -270,7 +376,7 @@ class TensoRFModel(Model):
         rgb = torch.moveaxis(rgb, -1, 0)[None, ...]
 
         psnr = self.psnr(image, rgb)
-        ssim = self.ssim(image, rgb)
+        ssim = cast(torch.Tensor, self.ssim(image, rgb))
         lpips = self.lpips(image, rgb)
 
         metrics_dict = {
@@ -278,5 +384,7 @@ class TensoRFModel(Model):
             "ssim": float(ssim.item()),
             "lpips": float(lpips.item()),
         }
+        self.camera_optimizer.get_metrics_dict(metrics_dict)
+
         images_dict = {"img": combined_rgb, "accumulation": acc, "depth": depth}
         return metrics_dict, images_dict

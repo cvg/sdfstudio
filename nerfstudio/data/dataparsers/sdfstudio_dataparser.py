@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -11,8 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+"""Datapaser for sdfstudio formatted data"""
 
-"""Data parser for friends dataset"""
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -160,7 +160,7 @@ class SDFStudioDataParserConfig(DataParserConfig):
     neighbors_num: Optional[int] = None
     neighbors_shuffle: Optional[bool] = False
     pairs_sorted_ascending: Optional[bool] = True
-    """if src image pairs are sorted in ascending order by similarity i.e. 
+    """if src image pairs are sorted in ascending order by similarity i.e.
     the last element is the most similar to the first (ref)"""
     skip_every_for_val_split: int = 1
     """sub sampling validation images"""
@@ -175,7 +175,7 @@ class SDFStudio(DataParser):
 
     config: SDFStudioDataParserConfig
 
-    def _generate_dataparser_outputs(self, split="train"):  # pylint: disable=unused-argument,too-many-statements
+    def _generate_dataparser_outputs(self, split="train"):
         # load meta data
         meta = load_from_json(self.config.data / "meta_data.json")
 
@@ -270,17 +270,8 @@ class SDFStudio(DataParser):
             camera_to_worlds, transform = camera_utils.auto_orient_and_center_poses(
                 camera_to_worlds,
                 method="up",
-                center_poses=False,
+                center_method="none",
             )
-
-            # we should also transform normal accordingly
-            normal_images_aligned = []
-            for normal_image in normal_images:
-                h, w, _ = normal_image.shape
-                normal_image = transform[:3, :3] @ normal_image.reshape(-1, 3).permute(1, 0)
-                normal_image = normal_image.permute(1, 0).reshape(h, w, 3)
-                normal_images_aligned.append(normal_image)
-            normal_images = normal_images_aligned
 
         # scene box from meta data
         meta_scene_box = meta["scene_box"]
@@ -360,12 +351,21 @@ class SDFStudio(DataParser):
                 },
             }
 
+        depth_filenames = depth_images
+        normal_filenames = normal_images
+        c2w_colmap = camera_to_worlds
         dataparser_outputs = DataparserOutputs(
             image_filenames=image_filenames,
             cameras=cameras,
             scene_box=scene_box,
-            additional_inputs=additional_inputs_dict,
-            depths=depth_images,
-            normals=normal_images,
+            metadata={
+                "depth_filenames": depth_filenames if len(depth_filenames) > 0 else None,
+                "normal_filenames": normal_filenames if len(normal_filenames) > 0 else None,
+                "transform": transform,
+                # required for normal maps, these are in colmap format so they require c2w before conversion
+                "camera_to_worlds": c2w_colmap if len(c2w_colmap) > 0 else None,
+                "include_mono_prior": self.config.include_mono_prior,
+                "depth_unit_scale_factor": self.config.depth_unit_scale_factor,
+            },
         )
         return dataparser_outputs

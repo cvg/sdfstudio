@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -18,16 +18,19 @@ Dataset.
 from __future__ import annotations
 
 from copy import deepcopy
-from typing import Dict
+from pathlib import Path
+from typing import Dict, List
 
 import numpy as np
 import numpy.typing as npt
 import torch
+from jaxtyping import Float
 from PIL import Image
 from rich.progress import Console, track
+from torch import Tensor
 from torch.utils.data import Dataset
-from torchtyping import TensorType
 
+from nerfstudio.cameras.cameras import Cameras
 from nerfstudio.data.dataparsers.base_dataparser import DataparserOutputs
 from nerfstudio.data.utils.data_utils import get_image_mask_tensor_from_path
 from nerfstudio.utils.images import BasicImages
@@ -41,10 +44,12 @@ class InputDataset(Dataset):
         scale_factor: The scaling factor for the dataparser outputs
     """
 
+    exclude_batch_keys_from_device: List[str] = ["image", "mask"]
+    cameras: Cameras
+
     def __init__(self, dataparser_outputs: DataparserOutputs, scale_factor: float = 1.0):
         super().__init__()
         self._dataparser_outputs = dataparser_outputs
-        self.has_masks = dataparser_outputs.mask_filenames is not None
         self.scale_factor = scale_factor
         self.scene_box = deepcopy(dataparser_outputs.scene_box)
         self.metadata = deepcopy(dataparser_outputs.metadata)
@@ -67,17 +72,15 @@ class InputDataset(Dataset):
             width, height = pil_image.size
             newsize = (int(width * self.scale_factor), int(height * self.scale_factor))
             pil_image = pil_image.resize(newsize, resample=Image.BILINEAR)
-        image = np.array(pil_image, dtype="uint8")  # shape is (h, w, 3 or 4)
-        # mask_filename = str(image_filename).replace("dense/images", "masks").replace(".jpg", ".npy")
-        # mask = np.load(mask_filename)
-        # image = image * mask[..., None]
-
+        image = np.array(pil_image, dtype="uint8")  # shape is (h, w) or (h, w, 3 or 4)
+        if len(image.shape) == 2:
+            image = image[:, :, None].repeat(3, axis=2)
         assert len(image.shape) == 3
         assert image.dtype == np.uint8
         assert image.shape[2] in [3, 4], f"Image shape of {image.shape} is in correct."
         return image
 
-    def get_image(self, image_idx: int) -> TensorType["image_height", "image_width", "num_channels"]:
+    def get_image(self, image_idx: int) -> Float[Tensor, "image_height image_width num_channels"]:
         """Returns a 3 channel image.
 
         Args:
@@ -85,10 +88,7 @@ class InputDataset(Dataset):
         """
         image = torch.from_numpy(self.get_numpy_image(image_idx).astype("float32") / 255.0)
         if self._dataparser_outputs.alpha_color is not None and image.shape[-1] == 4:
-            assert image.shape[-1] == 4
             image = image[:, :, :3] * image[:, :, -1:] + self._dataparser_outputs.alpha_color * (1.0 - image[:, :, -1:])
-        else:
-            image = image[:, :, :3]
         return image
 
     def get_data(self, image_idx: int) -> Dict:
@@ -97,27 +97,24 @@ class InputDataset(Dataset):
         Args:
             image_idx: The image index in the dataset.
         """
-        if image_idx in self.image_cache:
-            image = self.image_cache[image_idx]
-        else:
-            image = self.get_image(image_idx)
-            self.image_cache[image_idx] = image
 
-        data = {"image_idx": image_idx}
-        data["image"] = image
+        image = self.get_image(image_idx)
+        data = {"image_idx": image_idx, "image": image}
         for _, data_func_dict in self._dataparser_outputs.additional_inputs.items():
             assert "func" in data_func_dict, "Missing function to process data: specify `func` in `additional_inputs`"
             func = data_func_dict["func"]
             assert "kwargs" in data_func_dict, "No data to process: specify `kwargs` in `additional_inputs`"
             data.update(func(image_idx, **data_func_dict["kwargs"]))
-        if self.has_masks:
+        if self._dataparser_outputs.mask_filenames is not None:
             mask_filepath = self._dataparser_outputs.mask_filenames[image_idx]
             data["mask"] = get_image_mask_tensor_from_path(filepath=mask_filepath, scale_factor=self.scale_factor)
+            assert (
+                data["mask"].shape[:2] == data["image"].shape[:2]
+            ), f"Mask and image have different shapes. Got {data['mask'].shape[:2]} and {data['image'].shape[:2]}"
         metadata = self.get_metadata(data)
         data.update(metadata)
         return data
 
-    # pylint: disable=no-self-use
     def get_metadata(self, data: Dict) -> Dict:
         """Method that can be used to process any additional metadata that may be part of the model inputs.
 
@@ -130,6 +127,15 @@ class InputDataset(Dataset):
     def __getitem__(self, image_idx: int) -> Dict:
         data = self.get_data(image_idx)
         return data
+
+    @property
+    def image_filenames(self) -> List[Path]:
+        """
+        Returns image filenames for this dataset.
+        The order of filenames is the same as in the Cameras object for easy mapping.
+        """
+
+        return self._dataparser_outputs.image_filenames
 
 
 class GeneralizedDataset(InputDataset):

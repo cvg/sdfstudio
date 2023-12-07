@@ -12,7 +12,7 @@ build/
 develop-eggs/
 dist/
 downloads/
-!scripts/downloads/
+!nerfstudio/scripts/downloads/
 eggs/
 .eggs/
 lib/
@@ -173,8 +173,7 @@ gradio_cached_examples/
 events.out.*
 
 # Data
-data
-!*/data
+/data
 
 # Misc
 old/
@@ -196,3 +195,8 @@ camera_paths/
 vis_results/
 W/
 *.ply
+.DS_Store
+._.DS_Store
+*/**/.DS_Store
+*/**/._.DS_Store
+

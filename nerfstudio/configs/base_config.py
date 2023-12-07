@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,31 +14,19 @@
 
 """Base Configs"""
 
-# pylint: disable=wrong-import-position
 
 from __future__ import annotations
 
-import warnings
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Type
-
-import yaml
-from rich.console import Console
-from typing_extensions import Literal
-
-from nerfstudio.configs.config_utils import to_immutable_dict
+from typing import Any, List, Literal, Optional, Tuple, Type
 
 # model instances
 from nerfstudio.utils import writer
 
-warnings.filterwarnings("ignore", module="torchvision")
-
-CONSOLE = Console(width=120)
 
 # Pretty printing class
-class PrintableConfig:  # pylint: disable=too-few-public-methods
+class PrintableConfig:
     """Printable Config defining str function"""
 
     def __str__(self):
@@ -56,7 +44,7 @@ class PrintableConfig:  # pylint: disable=too-few-public-methods
 
 # Base instantiate configs
 @dataclass
-class InstantiateConfig(PrintableConfig):  # pylint: disable=too-few-public-methods
+class InstantiateConfig(PrintableConfig):
     """Config class for instantiating an the class specified in the _target attribute."""
 
     _target: Type
@@ -72,15 +60,17 @@ class MachineConfig(PrintableConfig):
     """Configuration of machine setup"""
 
     seed: int = 42
-    """random seed initilization"""
-    num_gpus: int = 1
-    """total number of gpus available for train/eval"""
+    """random seed initialization"""
+    num_devices: int = 1
+    """total number of devices (e.g., gpus) available for train/eval"""
     num_machines: int = 1
     """total number of distributed machines available (for DDP)"""
     machine_rank: int = 0
     """current machine's rank (for DDP)"""
     dist_url: str = "auto"
     """distributed connection point (for DDP)"""
+    device_type: Literal["cpu", "cuda", "mps"] = "cuda"
+    """device type to use for training"""
 
 
 @dataclass
@@ -97,6 +87,7 @@ class LocalWriterConfig(InstantiateConfig):
         writer.EventName.CURR_TEST_PSNR,
         writer.EventName.VIS_RAYS_PER_SEC,
         writer.EventName.TEST_RAYS_PER_SEC,
+        writer.EventName.ETA,
     )
     """specifies which stats will be logged/printed to terminal"""
     max_log_size: int = 10
@@ -121,12 +112,14 @@ class LoggingConfig(PrintableConfig):
     """number of steps between logging stats"""
     max_buffer_size: int = 20
     """maximum history size to keep for computing running averages of stats.
-     e.g. if 20, averages will be computed over past 20 occurances."""
-    local_writer: LocalWriterConfig = LocalWriterConfig(enable=True)
+     e.g. if 20, averages will be computed over past 20 occurrences."""
+    local_writer: LocalWriterConfig = field(default_factory=lambda: LocalWriterConfig(enable=True))
     """if provided, will print stats locally. if None, will disable printing"""
-    enable_profiler: bool = True
-    """whether to enable profiling code; prints speed of functions at the end of a program.
-    profiler logs run times of functions and prints at end of training"""
+    profiler: Literal["none", "basic", "pytorch"] = "basic"
+    """how to profile the code;
+        "basic" - prints speed of all decorated functions at the end of a program.
+        "pytorch" - same as basic, but it also traces few training steps.
+    """
 
 
 # Trainer related configs
@@ -168,17 +161,12 @@ class ViewerConfig(PrintableConfig):
 
     relative_log_filename: str = "viewer_log_filename.txt"
     """Filename to use for the log file."""
-    start_train: bool = True
-    """whether to immediately start training upon loading viewer
-    if False, will just visualize dataset but you can toggle training in viewer"""
-    zmq_port: Optional[int] = None
-    """The zmq port to connect to for communication. If None, find an available port."""
-    launch_bridge_server: bool = True
-    """whether or not to launch the bridge server"""
-    websocket_port: Optional[int] = 7007
-    """the default websocket port to connect to"""
-    ip_address: str = "127.0.0.1"
-    """the ip address where the bridge server is running"""
+    websocket_port: Optional[int] = None
+    """The websocket port to connect to. If None, find an available port."""
+    websocket_port_default: int = 7007
+    """The default websocket port to connect to if websocket_port is not specified"""
+    websocket_host: str = "0.0.0.0"
+    """The host address to bind the websocket server to."""
     num_rays_per_chunk: int = 32768
     """number of rays per chunk to render with viewer"""
     max_num_display_images: int = 512
@@ -186,6 +174,16 @@ class ViewerConfig(PrintableConfig):
     actually used in training/evaluation. If -1, display all."""
     quit_on_train_completion: bool = False
     """Whether to kill the training job when it has completed. Note this will stop rendering in the viewer."""
+    image_format: Literal["jpeg", "png"] = "jpeg"
+    """Image format viewer should use; jpeg is lossy compression, while png is lossless."""
+    jpeg_quality: int = 90
+    """Quality tradeoff to use for jpeg compression."""
+    make_share_url: bool = False
+    """Viewer beta feature: print a shareable URL. `vis` must be set to viewer_beta; this flag is otherwise ignored."""
+    camera_frustum_scale: float = 0.1
+    """Scale for the camera frustums in the viewer."""
+    default_composite_depth: bool = True
+    """The default value for compositing depth. Turn off if you want to see the camera frustums without occlusions."""
 
 
 from nerfstudio.engine.optimizers import OptimizerConfig

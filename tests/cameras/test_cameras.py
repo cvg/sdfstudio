@@ -13,7 +13,6 @@ BATCH_SIZE = 2
 H_W = 800
 FX_Y = 10.0
 CX_Y = H_W / 2.0
-# pylint: disable=unnecessary-comprehension
 C2W_FLAT = torch.eye(4)[:3, :]
 CAMERA_TO_WORLDS = [
     C2W_FLAT,
@@ -281,7 +280,14 @@ def check_generate_rays_shape():
 def _check_dataclass_allclose(ipt, other):
     for field in dataclasses.fields(ipt):
         if getattr(ipt, field.name) is not None:
-            assert torch.allclose(getattr(ipt, field.name), getattr(other, field.name))
+            if isinstance(getattr(ipt, field.name), dict):
+                ipt_dict = getattr(ipt, field.name)
+                other_dict = getattr(other, field.name)
+                for k, v in ipt_dict.items():
+                    assert k in other_dict
+                    assert torch.allclose(v, other_dict[k])
+            else:
+                assert torch.allclose(getattr(ipt, field.name), getattr(other, field.name))
     return True
 
 

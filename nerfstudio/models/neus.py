@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -95,7 +95,10 @@ class NeuSModel(SurfaceModel):
 
     def sample_and_forward_field(self, ray_bundle: RayBundle) -> Dict:
         ray_samples = self.sampler(ray_bundle, sdf_fn=self.field.get_sdf)
+<<<<<<< HEAD
         # save_points("a.ply", ray_samples.frustums.get_start_positions().reshape(-1, 3).detach().cpu().numpy())
+=======
+>>>>>>> nerfstudio
         field_outputs = self.field(ray_samples, return_alphas=True)
         weights, transmittance = ray_samples.get_weights_and_transmittance_from_alphas(
             field_outputs[FieldHeadNames.ALPHA]

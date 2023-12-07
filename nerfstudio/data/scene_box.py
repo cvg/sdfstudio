@@ -1,4 +1,4 @@
-# Copyright 2022 The Nerfstudio Team. All rights reserved.
+# Copyright 2022 the Regents of the University of California, Nerfstudio Team and contributors. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,16 +19,19 @@ Dataset input structures.
 from dataclasses import dataclass
 from typing import Dict, Optional, Union
 
-import torch
 from torchtyping import TensorType
 from typing_extensions import Literal
+import viser.transforms as vtf
+
+from jaxtyping import Float
+from torch import Tensor
 
 
 @dataclass
 class SceneBox:
     """Data to represent the scene box."""
 
-    aabb: TensorType[2, 3] = None
+    aabb: Float[Tensor, "2 3"]
     """aabb: axis-aligned bounding box.
     aabb[0] is the minimum (x,y,z) point.
     aabb[1] is the maximum (x,y,z) point."""
@@ -64,7 +67,7 @@ class SceneBox:
         return SceneBox(aabb=(self.aabb - self.get_center()) * scale_factor)
 
     @staticmethod
-    def get_normalized_positions(positions: TensorType[..., 3], aabb: TensorType[2, 3]):
+    def get_normalized_positions(positions: Float[Tensor, "*batch 3"], aabb: Float[Tensor, "2 3"]):
         """Return normalized positions in range [0, 1] based on the aabb axis-aligned bounding box.
 
         Args:
@@ -75,23 +78,8 @@ class SceneBox:
         normalized_positions = (positions - aabb[0]) / aabb_lengths
         return normalized_positions
 
-    def to_json(self) -> Dict:
-        """Returns a json object from the Python object."""
-        return {"type": "aabb", "min_point": self.aabb[0].tolist(), "max_point": self.aabb[1].tolist()}
-
     @staticmethod
-    def from_json(json_: Dict) -> "SceneBox":
-        """Returns the an instance of SceneBox from a json dictionary.
-
-        Args:
-            json_: the json dictionary containing scene box information
-        """
-        assert json_["type"] == "aabb"
-        aabb = torch.tensor([json_[0], json_[1]])
-        return SceneBox(aabb=aabb)
-
-    @staticmethod
-    def from_camera_poses(poses: TensorType[..., 3, 4], scale_factor: float) -> "SceneBox":
+    def from_camera_poses(poses: Float[Tensor, "*batch 3 4"], scale_factor: float) -> "SceneBox":
         """Returns the instance of SceneBox that fully envelopes a set of poses
 
         Args:
@@ -101,3 +89,38 @@ class SceneBox:
         xyzs = poses[..., :3, -1]
         aabb = torch.stack([torch.min(xyzs, dim=0)[0], torch.max(xyzs, dim=0)[0]])
         return SceneBox(aabb=aabb * scale_factor)
+
+
+@dataclass
+class OrientedBox:
+    R: Float[Tensor, "3 3"]
+    """R: rotation matrix."""
+    T: Float[Tensor, "3"]
+    """T: translation vector."""
+    S: Float[Tensor, "3"]
+    """S: scale vector."""
+
+    def within(self, pts: Float[Tensor, "n 3"]):
+        """Returns a boolean mask indicating whether each point is within the box."""
+        R, T, S = self.R, self.T, self.S.to(pts)
+        H = torch.eye(4, device=pts.device, dtype=pts.dtype)
+        H[:3, :3] = R
+        H[:3, 3] = T
+        H_world2bbox = torch.inverse(H)
+        pts = torch.cat((pts, torch.ones_like(pts[..., :1])), dim=-1)
+        pts = torch.matmul(H_world2bbox, pts.T).T[..., :3]
+
+        comp_l = torch.tensor(-S / 2)
+        comp_m = torch.tensor(S / 2)
+        mask = torch.all(torch.concat([pts > comp_l, pts < comp_m], dim=-1), dim=-1)
+        return mask
+
+    @staticmethod
+    def from_params(
+        pos: Tuple[float, float, float], rpy: Tuple[float, float, float], scale: Tuple[float, float, float]
+    ):
+        """Construct a box from position, rotation, and scale parameters."""
+        R = torch.tensor(vtf.SO3.from_rpy_radians(rpy[0], rpy[1], rpy[2]).as_matrix())
+        T = torch.tensor(pos)
+        S = torch.tensor(scale)
+        return OrientedBox(R=R, T=T, S=S)
