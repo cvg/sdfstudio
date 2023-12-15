@@ -4,21 +4,19 @@ eval.py
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
+import numpy as np
 import torch
 import tyro
 from rich.console import Console
 
 from nerfstudio.model_components.ray_samplers import save_points
 from nerfstudio.utils.eval_utils import eval_setup
-from nerfstudio.utils.marching_cubes import (
-    get_surface_occupancy,
-    get_surface_sliding,
-    get_surface_sliding_with_contraction,
-)
+from nerfstudio.utils.marching_cubes import get_surface_occupancy, get_surface_sliding, get_surface_sliding_with_contraction
 
 CONSOLE = Console(width=120)
 
@@ -109,10 +107,11 @@ class ExtractMesh:
 
             # convert into original coordinate frame
             # load metadata from preprocessing
-            meta = json.load(pipeline.datamanager.dataparser.config.data / "meta_data.json")
+            with open(str(pipeline.datamanager.dataparser.config.data / "meta_data.json"), 'r') as f:
+                meta = json.load(f)
             nerf2gt = np.array(meta["worldtogt"])
             scaled_vertices = np.asarray(mesh.vertices)
-            scaled_vertices = np.concatenate(scaled_vertices, np.ones((scaled_vertices.shape[0], 1)), axis=-1)
+            scaled_vertices = np.concatenate([scaled_vertices, np.ones((scaled_vertices.shape[0], 1))], axis=-1)
             scaled_vertices = (nerf2gt @ scaled_vertices.T).T
             mesh.vertices = scaled_vertices[:, :3]
             filename = str(self.output_path).replace(".ply", "_scaled.ply")
