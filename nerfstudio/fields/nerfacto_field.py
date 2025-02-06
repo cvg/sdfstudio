@@ -37,6 +37,7 @@ from nerfstudio.field_components.field_heads import (
     PredNormalsFieldHead,
     RGBFieldHead,
     SemanticFieldHead,
+    InstanceFieldHead,
     TransientDensityFieldHead,
     TransientRGBFieldHead,
     UncertaintyFieldHead,
@@ -101,10 +102,16 @@ class TCNNNerfactoField(Field):
         transient_embedding_dim: int = 16,
         use_transient_embedding: bool = False,
         use_semantics: bool = False,
-        num_semantic_classes: int = 100,
+        num_semantic_classes: Optional[int] = None,
+        use_instances: bool = False,
+        num_instances: int = 150,
         use_pred_normals: bool = False,
         use_average_appearance_embedding: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
+        semantic_num_layers: int = 4,
+        semantic_layer_width: int = 150,
+        instance_num_layers: int = 4,
+        instance_layer_width: int = 150,
     ) -> None:
         super().__init__()
 
@@ -118,6 +125,7 @@ class TCNNNerfactoField(Field):
         self.use_average_appearance_embedding = use_average_appearance_embedding
         self.use_transient_embedding = use_transient_embedding
         self.use_semantics = use_semantics
+        self.use_instances = use_instances
         self.use_pred_normals = use_pred_normals
 
         base_res = 16
@@ -180,17 +188,38 @@ class TCNNNerfactoField(Field):
         if self.use_semantics:
             self.mlp_semantics = tcnn.Network(
                 n_input_dims=self.geo_feat_dim,
-                n_output_dims=hidden_dim_transient,
+                n_output_dims=semantic_layer_width,
                 network_config={
-                    "otype": "FullyFusedMLP",
+                    # "otype": "FullyFusedMLP",
+                    "otype": "CutlassMLP",
                     "activation": "ReLU",
-                    "output_activation": "None",
-                    "n_neurons": 64,
-                    "n_hidden_layers": 1,
+                    # "output_activation": "None",
+                    "output_activation": "ReLU",
+                    "n_neurons": semantic_layer_width,
+                    "n_hidden_layers": semantic_num_layers - 1,
                 },
             )
             self.field_head_semantics = SemanticFieldHead(
                 in_dim=self.mlp_semantics.n_output_dims, num_classes=num_semantic_classes
+            )
+                    
+        # instances
+        if self.use_instances:
+            self.mlp_instances = tcnn.Network(
+                n_input_dims=self.geo_feat_dim,
+                n_output_dims=instance_layer_width,
+                network_config={
+                    # "otype": "FullyFusedMLP",
+                    "otype": "CutlassMLP",
+                    "activation": "ReLU",
+                    # "output_activation": "None",
+                    "output_activation": "ReLU",
+                    "n_neurons": instance_layer_width,
+                    "n_hidden_layers": instance_num_layers - 1,
+                },
+            )
+            self.field_head_instances = InstanceFieldHead(
+                in_dim=self.mlp_instances.n_output_dims, num_instances=num_instances
             )
 
         # predicted normals
@@ -293,6 +322,18 @@ class TCNNNerfactoField(Field):
             )
             x = self.mlp_semantics(semantics_input).view(*outputs_shape, -1).to(directions)
             outputs[FieldHeadNames.SEMANTICS] = self.field_head_semantics(x)
+            
+        # instances
+        if self.use_instances:
+            density_embedding_copy = density_embedding.clone().detach()
+            instances_input = torch.cat(
+                [
+                    density_embedding_copy.view(-1, self.geo_feat_dim),
+                ],
+                dim=-1,
+            )
+            x = self.mlp_instances(instances_input).view(*outputs_shape, -1).to(directions)
+            outputs[FieldHeadNames.INSTANCES] = self.field_head_instances(x)
 
         # predicted normals
         if self.use_pred_normals:

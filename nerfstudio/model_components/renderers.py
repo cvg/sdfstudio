@@ -294,6 +294,18 @@ class SemanticRenderer(nn.Module):
         sem = torch.sum(weights * semantics, dim=-2)
         return sem
 
+class InstanceRenderer(nn.Module):
+    """Calculate instance along the ray."""
+
+    @classmethod
+    def forward(
+        cls,
+        instances: TensorType["bs":..., "num_samples", "num_instances"],
+        weights: TensorType["bs":..., "num_samples", 1],
+    ) -> TensorType["bs":..., "num_instances"]:
+        """Calculate instances along the ray."""
+        ins = torch.sum(weights * instances, dim=-2)
+        return ins
 
 class NormalsRenderer(nn.Module):
     """Calculate normals along the ray."""

@@ -1,3 +1,7 @@
+# This script was created based on the sdfstudio_dataparser.py file.
+
+
+
 # Copyright 2022 The Nerfstudio Team. All rights reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -34,7 +38,6 @@ from nerfstudio.utils.io import load_from_json
 
 CONSOLE = Console()
 
-
 def get_src_from_pairs(
     ref_idx, all_imgs, pairs_srcs, neighbors_num=None, neighbors_shuffle=False
 ) -> Dict[str, TensorType]:
@@ -49,7 +52,6 @@ def get_src_from_pairs(
             src_idx = src_idx[: neighbors_num + 1]
     src_idx = src_idx.to(all_imgs.device)
     return {"src_imgs": all_imgs[src_idx], "src_idxs": src_idx}
-
 
 def get_image(image_filename, alpha_color=None) -> TensorType["image_height", "image_width", "num_channels"]:
     """Returns a 3 channel image.
@@ -70,35 +72,6 @@ def get_image(image_filename, alpha_color=None) -> TensorType["image_height", "i
         image = image[:, :, :3]
     return image
 
-
-def get_depths_and_normals(image_idx: int, depths, normals):
-    """function to process additional depths and normal information
-
-    Args:
-        image_idx: specific image index to work with
-        semantics: semantics data
-    """
-
-    # depth
-    depth = depths[image_idx]
-    # normal
-    normal = normals[image_idx]
-
-    return {"depth": depth, "normal": normal}
-
-
-def get_sensor_depths(image_idx: int, sensor_depths):
-    """function to process additional sensor depths
-
-    Args:
-        image_idx: specific image index to work with
-        sensor_depths: semantics data
-    """
-
-    # sensor depth
-    sensor_depth = sensor_depths[image_idx]
-
-    return {"sensor_depth": sensor_depth}
 
 def get_semantics(image_idx: int, semantic_path, include_auxiliary_semantics=False, aux_path=None, include_semantic_group=False, group_path=None):
     """function to process semantic labels
@@ -162,50 +135,15 @@ def get_instances(image_idx: int, instance_path):
     
     return results
 
-def get_foreground_masks(image_idx: int, fg_masks):
-    """function to process additional foreground_masks
-
-    Args:
-        image_idx: specific image index to work with
-        fg_masks: foreground_masks
-    """
-
-    # sensor depth
-    fg_mask = fg_masks[image_idx]
-
-    return {"fg_mask": fg_mask}
-
-
-def get_sparse_sfm_points(image_idx: int, sfm_points):
-    """function to process additional sparse sfm points
-
-    Args:
-        image_idx: specific image index to work with
-        sfm_points: sparse sfm points
-    """
-
-    # sfm points
-    sparse_sfm_points = sfm_points[image_idx]
-    sparse_sfm_points = BasicImages([sparse_sfm_points])
-    return {"sparse_sfm_points": sparse_sfm_points}
-
 
 @dataclass
-class SDFStudioDataParserConfig(DataParserConfig):
+class IMLDataParserConfig(DataParserConfig):
     """Scene dataset parser config"""
 
-    _target: Type = field(default_factory=lambda: SDFStudio)
+    _target: Type = field(default_factory=lambda: IML)
     """target class to instantiate"""
     data: Path = Path("data/DTU/scan65")
     """Directory specifying location of data."""
-    include_mono_prior: bool = False
-    """whether or not to load monocular depth and normal """
-    include_sensor_depth: bool = False
-    """whether or not to load sensor depth"""
-    include_foreground_mask: bool = False
-    """whether or not to load foreground mask"""
-    include_sfm_points: bool = False
-    """whether or not to load sfm points"""    
     include_semantics: bool = False
     """whether or not to load semantic labels"""
     include_auxiliary_semantics: bool = False
@@ -235,10 +173,10 @@ class SDFStudioDataParserConfig(DataParserConfig):
 
 
 @dataclass
-class SDFStudio(DataParser):
-    """SDFStudio Dataset"""
+class IML(DataParser):
+    """Nerfacto Panoptic Dataset"""
 
-    config: SDFStudioDataParserConfig
+    config: IMLDataParserConfig
 
     def _generate_dataparser_outputs(self, split="train"):  # pylint: disable=unused-argument,too-many-statements
         # load meta data
@@ -254,15 +192,10 @@ class SDFStudio(DataParser):
                 indices = [i for i in indices if i % self.config.skip_every_for_val_split != 0]
 
         image_filenames = []
-        depth_images = []
-        normal_images = []
-        sensor_depth_images = []
-        foreground_mask_images = []
         semantic_filenames = []
         aux_semantic_filenames = []
         instance_filenames = []
         group_filenames = []
-        sfm_points = []
         fx = []
         fy = []
         cx = []
@@ -284,47 +217,6 @@ class SDFStudio(DataParser):
             cx.append(intrinsics[0, 2])
             cy.append(intrinsics[1, 2])
             camera_to_worlds.append(camtoworld)
-
-            if self.config.include_mono_prior:
-                assert meta["has_mono_prior"]
-                # load mono depth
-                depth = np.load(self.config.data / frame["mono_depth_path"])
-                depth_images.append(torch.from_numpy(depth).float())
-
-                # load mono normal
-                normal = np.load(self.config.data / frame["mono_normal_path"])
-
-                # transform normal to world coordinate system
-                normal = normal * 2.0 - 1.0  # omnidata output is normalized so we convert it back to normal here
-                normal = torch.from_numpy(normal).float()
-
-                rot = camtoworld[:3, :3]
-
-                normal_map = normal.reshape(3, -1)
-                normal_map = torch.nn.functional.normalize(normal_map, p=2, dim=0)
-
-                normal_map = rot @ normal_map
-                normal_map = normal_map.permute(1, 0).reshape(*normal.shape[1:], 3)
-                normal_images.append(normal_map)
-
-            if self.config.include_sensor_depth:
-                assert meta["has_sensor_depth"]
-                # load sensor depth
-                sensor_depth = np.load(self.config.data / frame["sensor_depth_path"])
-                sensor_depth_images.append(torch.from_numpy(sensor_depth).float())
-
-            if self.config.include_foreground_mask:
-                assert meta["has_foreground_mask"]
-                # load foreground mask
-                foreground_mask = np.array(Image.open(self.config.data / frame["foreground_mask"]), dtype="uint8")
-                foreground_mask = foreground_mask[..., :1]
-                foreground_mask_images.append(torch.from_numpy(foreground_mask).float() / 255.0)
-
-            if self.config.include_sfm_points:
-                assert meta["has_sparse_sfm_points"]
-                # load sparse sfm points
-                sfm_points_view = np.loadtxt(self.config.data / frame["sfm_sparse_points_view"])
-                sfm_points.append(torch.from_numpy(sfm_points_view).float())
 
             if self.config.include_semantics:
                 assert meta["has_semantics"]
@@ -366,15 +258,6 @@ class SDFStudio(DataParser):
                 center_poses=False,
             )
 
-            # we should also transform normal accordingly
-            normal_images_aligned = []
-            for normal_image in normal_images:
-                h, w, _ = normal_image.shape
-                normal_image = transform[:3, :3] @ normal_image.reshape(-1, 3).permute(1, 0)
-                normal_image = normal_image.permute(1, 0).reshape(h, w, 3)
-                normal_images_aligned.append(normal_image)
-            normal_images = normal_images_aligned
-
         # scene box from meta data
         meta_scene_box = meta["scene_box"]
         aabb = torch.tensor(meta_scene_box["aabb"], dtype=torch.float32)
@@ -401,30 +284,9 @@ class SDFStudio(DataParser):
         # TODO supports downsample
         # cameras.rescale_output_resolution(scaling_factor=1.0 / self.config.downscale_factor)
 
-        if self.config.include_mono_prior:
-            additional_inputs_dict = {
-                "cues": {"func": get_depths_and_normals, "kwargs": {"depths": depth_images, "normals": normal_images}}
-            }
-        else:
-            additional_inputs_dict = {}
-
-        if self.config.include_sensor_depth:
-            additional_inputs_dict["sensor_depth"] = {
-                "func": get_sensor_depths,
-                "kwargs": {"sensor_depths": sensor_depth_images},
-            }
-
-        if self.config.include_foreground_mask:
-            additional_inputs_dict["foreground_masks"] = {
-                "func": get_foreground_masks,
-                "kwargs": {"fg_masks": foreground_mask_images},
-            }
-
-        if self.config.include_sfm_points:
-            additional_inputs_dict["sfm_points"] = {
-                "func": get_sparse_sfm_points,
-                "kwargs": {"sfm_points": sfm_points},
-            }
+        
+        additional_inputs_dict = {}
+        
         # load pair information
         pairs_path = self.config.data / "pairs.txt"
         if pairs_path.exists() and split == "train" and self.config.load_pairs:
@@ -492,8 +354,6 @@ class SDFStudio(DataParser):
             cameras=cameras,
             scene_box=scene_box,
             additional_inputs=additional_inputs_dict,
-            depths=depth_images,
-            normals=normal_images,
             metadata=metadata_dic,
         )
         return dataparser_outputs

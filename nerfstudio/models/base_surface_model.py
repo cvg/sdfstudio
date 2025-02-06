@@ -56,6 +56,7 @@ from nerfstudio.model_components.renderers import (
     DepthRenderer,
     RGBRenderer,
     SemanticRenderer,
+    InstanceRenderer,
 )
 from nerfstudio.model_components.scene_colliders import (
     AABBBoxCollider,
@@ -110,6 +111,8 @@ class SurfaceModelConfig(ModelConfig):
     """Sensor depth sdf loss multiplier."""
     sparse_points_sdf_loss_mult: float = 0.0
     """sparse point sdf loss multiplier"""
+    instance_loss_mult: float = 0.0
+    """instance loss multiplier"""
     semantic_loss_mult: float = 0.0
     """semantic loss multiplier"""
     semantic_patch_loss_mult: float = 0.0
@@ -142,9 +145,15 @@ class SurfaceModel(Model):
     config: SurfaceModelConfig
 
     def __init__(self, config, metadata: Dict, **kwargs) -> None:
-        if metadata and metadata.keys() and "semantics" in metadata.keys():
-            assert isinstance(metadata["semantics"], Semantics)
-            self.semantics = metadata["semantics"]
+        if metadata and metadata.keys():
+            if "semantics" in metadata.keys():
+                assert isinstance(metadata["semantics"], Semantics)
+                self.semantics = metadata["semantics"]
+            if "num_instances" in metadata.keys():
+                self.num_instances = metadata["num_instances"]
+            else:
+                self.num_instances = 188
+                
         super().__init__(config=config, metadata=metadata, **kwargs)
 
     def populate_modules(self):
@@ -180,7 +189,13 @@ class SurfaceModel(Model):
             ignore_label = self.semantics_output2model[self.config.semantic_ignore_label]
             self.semantic_loss = torch.nn.CrossEntropyLoss(
                 weight=(1.0 / (0.1 + hist)), reduction="mean", ignore_index=ignore_label)
+            self.aux_semantic_loss = torch.nn.CrossEntropyLoss(
+                weight=(1.0 / (0.1 + hist)), reduction="none", ignore_index=ignore_label)
             self.groups_loss = torch.nn.CrossEntropyLoss(reduction="mean")
+            
+        # instances
+        self.instance_loss = torch.nn.CrossEntropyLoss(
+            weight=None, reduction="mean", ignore_index=ignore_label)
 
         # Can we also use contraction for sdf?
         # Fields
@@ -191,6 +206,8 @@ class SurfaceModel(Model):
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
             add_semantics=self.config.semantic_loss_mult > 0.0,
             num_semantic_classes=self.semantics_numclasses if hasattr(self, "semantics") else None,
+            add_instances=self.config.instance_loss_mult > 0.0,
+            num_instances=self.num_instances,
         )
 
         # Collider
@@ -246,6 +263,7 @@ class SurfaceModel(Model):
         self.renderer_depth = DepthRenderer(method="expected")
         self.renderer_normal = SemanticRenderer()
         self.renderer_semantic = SemanticRenderer()
+        self.renderer_instance = InstanceRenderer()
         # patch warping
         self.patch_warping = PatchWarping(
             patch_size=self.config.patch_size, valid_angle_thres=self.config.patch_warp_angle_thres
@@ -357,10 +375,16 @@ class SurfaceModel(Model):
             "weights": weights,
         }
         outputs.update(bg_outputs)
+        
         if FieldHeadNames.SEMANTICS in field_outputs:
             semantics = self.renderer_semantic(semantics=field_outputs[FieldHeadNames.SEMANTICS],
                                                weights=weights.detach())
             outputs["semantics"] = semantics
+            
+        if FieldHeadNames.INSTANCES in field_outputs:
+            instances = self.renderer_instance(instances=field_outputs[FieldHeadNames.INSTANCES],
+                                               weights=weights.detach())
+            outputs["instances"] = instances
 
         if self.training:
             grad_points = field_outputs[FieldHeadNames.GRADIENT]
@@ -480,14 +504,30 @@ class SurfaceModel(Model):
                 loss_dict["sensor_freespace_loss"] = free_space_loss * self.config.sensor_depth_freespace_loss_mult
                 loss_dict["sensor_sdf_loss"] = sdf_loss * self.config.sensor_depth_sdf_loss_mult
 
+            
+            # instance loss
+            if "instances" in batch and self.config.instance_loss_mult > 0.0:
+                instances_label = batch["instances"].long().to(self.device)
+                instances_pred = outputs["instances"]                
+                loss_dict["instance_loss"] = (
+                        self.instance_loss(instances_pred, instances_label) * self.config.instance_loss_mult
+                    )
+                    
             # semantic loss
-            if "semantics" in batch:
+            if "semantics" in batch and self.config.semantic_loss_mult > 0.0:
                 label = self.semantics_output2model[batch["semantics"].long()].to(self.device)
+                second_label = self.semantics_output2model[batch["second_semantics"].long()].to(self.device)
                 semantics_pred = outputs["semantics"]
-                if self.config.semantic_loss_mult > 0.0:
+                if "second_semantics" in batch:
+                    loss_dict["semantic_loss"] = (
+                        (batch['prob_second_class'] * self.aux_semantic_loss(semantics_pred, second_label) + 
+                            batch['prob_first_class'] * self.aux_semantic_loss(semantics_pred, label) ).mean() * self.config.semantic_loss_mult
+                    )
+                else:
                     loss_dict["semantic_loss"] = (
                         self.semantic_loss(semantics_pred, label) * self.config.semantic_loss_mult
                     )
+         
                 reached_min_step_for_patch_loss = True
                 if self.config.semantic_patch_loss_min_step > 0:
                     assert step is not None
@@ -622,5 +662,14 @@ class SurfaceModel(Model):
             images_dict["semantics"] = torch.cat([colorized_label, colorized_pred], dim=1)
             metrics_dict["semantics_acc"] = self.sem_accuracy(pred, label)
             metrics_dict["semantics_miou"] = self.sem_miou(pred, label)
+            
+        if "instances" in batch:
+            label = batch["instances"].long().to(self.device)
+            pred = torch.argmax(outputs["instances"], dim=-1)
+            colorized_pred = self.semantics.colors[pred]
+            colorized_label = self.semantics.colors[label.long()]
+            images_dict["instances"] = torch.cat([colorized_label, colorized_pred], dim=1)
+            # metrics_dict["semantics_acc"] = self.sem_accuracy(pred, label)
+            # metrics_dict["semantics_miou"] = self.sem_miou(pred, label)
 
         return metrics_dict, images_dict

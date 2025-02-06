@@ -36,7 +36,7 @@ from nerfstudio.field_components.encodings import (
     PeriodicVolumeEncoding,
     TensorVMEncoding,
 )
-from nerfstudio.field_components.field_heads import FieldHeadNames, SemanticFieldHead
+from nerfstudio.field_components.field_heads import FieldHeadNames, SemanticFieldHead, InstanceFieldHead
 from nerfstudio.field_components.spatial_distortions import SpatialDistortion
 from nerfstudio.fields.base_field import Field, FieldConfig
 
@@ -172,6 +172,10 @@ class SDFFieldConfig(FieldConfig):
     """Number of layers for semantic head."""
     semantic_layer_width: int = 256
     """Number of hidden dimension of semantic head."""
+    instance_num_layers: int = 4
+    """Number of layers for instance head."""
+    instance_layer_width: int = 256
+    """Number of hidden dimension of instance head."""
 
 
 class SDFField(Field):
@@ -190,12 +194,16 @@ class SDFField(Field):
         num_images: int,
         use_average_appearance_embedding: bool = False,
         add_semantics: bool = False,
+        add_instances: bool = False,
         spatial_distortion: Optional[SpatialDistortion] = None,
         num_semantic_classes: Optional[int] = None,
+        num_instances: Optional[int] = None,
+        
     ) -> None:
         super().__init__()
         self.config = config
         self.add_semantics = add_semantics
+        self.add_instances = add_instances
 
         # TODO do we need aabb here?
         self.aabb = Parameter(aabb, requires_grad=False)
@@ -366,6 +374,46 @@ class SDFField(Field):
                 out_activation=nn.ReLU(),
             )
             self.field_head_semantics = SemanticFieldHead(in_dim=self.mlp_semantics.get_out_dim(), num_classes=self.num_semantic_classes)
+            # self.mlp_semantics = tcnn.Network(
+            #     n_input_dims=self.config.geo_feat_dim,
+            #     n_output_dims=self.config.semantic_layer_width,
+            #     network_config={                    
+            #         "otype": "CutlassMLP",
+            #         "activation": "ReLU",                   
+            #         "output_activation": "ReLU",
+            #         "n_neurons": self.config.semantic_layer_width,
+            #         "n_hidden_layers": self.config.semantic_num_layers - 1,
+            #     },
+            # )
+            # self.field_head_semantics = SemanticFieldHead(
+            #     in_dim=self.mlp_semantics.n_output_dims, num_classes=num_semantic_classes
+            # )
+        
+        if self.add_instances:
+            # instance head
+            self.num_instances = num_instances
+            self.mlp_instances = MLP(
+                in_dim=self.config.geo_feat_dim,
+                layer_width=self.config.instance_layer_width,
+                num_layers=self.config.instance_num_layers,
+                activation=nn.ReLU(),
+                out_activation=nn.ReLU(),
+            )
+            self.field_head_instances = InstanceFieldHead(in_dim=self.mlp_instances.get_out_dim(), num_instances=self.num_instances)
+            # self.mlp_instances = tcnn.Network(
+            #     n_input_dims=self.config.geo_feat_dim,
+            #     n_output_dims=self.config.instance_layer_width,
+            #     network_config={                    
+            #         "otype": "CutlassMLP",
+            #         "activation": "ReLU",                    
+            #         "output_activation": "ReLU",
+            #         "n_neurons": self.config.instance_layer_width,
+            #         "n_hidden_layers": self.config.instance_num_layers - 1,
+            #     },
+            # )
+            # self.field_head_instances = InstanceFieldHead(
+            #     in_dim=self.mlp_instances.n_output_dims, num_instances=num_instances
+            # )
 
     def set_cos_anneal_ratio(self, anneal: float) -> None:
         """Set the anneal value for the proposal network."""
@@ -580,6 +628,20 @@ class SDFField(Field):
         semantics_input = torch.cat(semantics_input, dim=-1)
         x = self.mlp_semantics(semantics_input)
         return x
+    
+    def get_instances(self, points, geo_features):
+        """compute instances"""
+
+        # TODO may detach geo_features from gradient, but in CVPR paper it was beneficial to keep it
+
+        # same as in nerfacto_field
+        instances_input = [
+            geo_features.view(-1, self.config.geo_feat_dim),
+        ]
+
+        instances_input = torch.cat(instances_input, dim=-1)
+        x = self.mlp_instances(instances_input)
+        return x
 
     def get_outputs(self, ray_samples: RaySamples, return_alphas=False, return_occupancy=False):
         """compute output of ray samples"""
@@ -635,6 +697,12 @@ class SDFField(Field):
             semantics = semantics.view(*ray_samples.frustums.directions.shape[:-1], -1)
             sem_head = self.field_head_semantics(semantics)
             outputs.update({FieldHeadNames.SEMANTICS: sem_head})
+            
+        if self.add_instances:
+            instances = self.get_instances(inputs, geo_feature)
+            instances = instances.view(*ray_samples.frustums.directions.shape[:-1], -1)
+            ins_head = self.field_head_instances(instances)
+            outputs.update({FieldHeadNames.INSTANCES: ins_head})
 
         if return_alphas:
             # TODO use mid point sdf for NeuS

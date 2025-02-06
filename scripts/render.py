@@ -90,12 +90,16 @@ def _render_trajectory_video(
                     pred = torch.argmax(pred, dim=-1).cpu()
                     pred = semantics_model2output[pred.long()]
                     output_image = pred.numpy().astype(np.uint8)
+                elif rendered_output_name == "instances":
+                    pred = outputs[rendered_output_name]
+                    pred = torch.argmax(pred, dim=-1).cpu()                    
+                    output_image = pred.numpy().astype(np.uint8)
                 else:
                     output_image = outputs[rendered_output_name].cpu().numpy()
                 render_image.append(output_image)
             render_image = np.concatenate(render_image, axis=1)
             if output_format == "images":
-                media.write_image(output_image_dir / f"{camera_idx:05d}.png", render_image)
+                media.write_image(output_image_dir / f"{camera_idx:06d}.png", render_image)
             else:
                 images.append(render_image)
 

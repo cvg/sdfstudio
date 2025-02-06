@@ -37,6 +37,7 @@ class FieldHeadNames(Enum):
     TRANSIENT_RGB = "transient_rgb"
     TRANSIENT_DENSITY = "transient_density"
     SEMANTICS = "semantics"
+    INSTANCES = "instances"
     NORMAL = "normal"
     SDF = "sdf"
     ALPHA = "alpha"
@@ -188,6 +189,19 @@ class SemanticFieldHead(FieldHead):
     def __init__(self, num_classes: int, in_dim: Optional[int] = None) -> None:
         super().__init__(in_dim=in_dim, out_dim=num_classes, field_head_name=FieldHeadNames.SEMANTICS, activation=None)
 
+
+
+class InstanceFieldHead(FieldHead):
+    """Instance output
+
+    Args:
+        num_classes: Number of instances
+        in_dim: input dimension. If not defined in constructor, it must be set later.
+        activation: output head activation
+    """
+
+    def __init__(self, num_instances: int, in_dim: Optional[int] = None) -> None:
+        super().__init__(in_dim=in_dim, out_dim=num_instances, field_head_name=FieldHeadNames.INSTANCES, activation=None)
 
 class PredNormalsFieldHead(FieldHead):
     """Predicted normals output.

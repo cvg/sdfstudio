@@ -51,6 +51,7 @@ dependencies = [
     "wandb>=0.13.3",
     "xatlas",
     "trimesh",
+    "numpy==1.26.4",
 ]
 
 [project.urls]

@@ -45,6 +45,7 @@ from nerfstudio.data.dataparsers.phototourism_dataparser import (
     PhototourismDataParserConfig,
 )
 from nerfstudio.data.dataparsers.sdfstudio_dataparser import SDFStudioDataParserConfig
+from nerfstudio.data.dataparsers.IML_dataparser import IMLDataParserConfig
 from nerfstudio.engine.optimizers import AdamOptimizerConfig, RAdamOptimizerConfig
 from nerfstudio.engine.schedulers import (
     ExponentialSchedulerConfig,
@@ -99,6 +100,8 @@ descriptions = {
     "neus-facto-bigmlp": "NeuS-facto with big MLP, it is used in training heritage data with 8 gpus",
     "bakedsdf": "Implementation of BackedSDF with multi-res hash grids",
     "bakedsdf-mlp": "Implementation of BackedSDF with large MLPs",
+#    add method of nerfacto panoptic, for 3DIML  
+    "IML": "Implimentation of 3DIML, namely nerfacto with panoptic segmentation"
 }
 
 method_configs["bakedsdf"] = Config(
@@ -227,6 +230,38 @@ method_configs["bakedsdf-mlp"] = Config(
     vis="viewer",
 )
 
+method_configs["IML"] = Config(
+    method_name="IML",
+    trainer=TrainerConfig(
+        steps_per_eval_batch=5000, steps_per_save=2000, max_num_iterations=30000, 
+        mixed_precision=False,
+    ),
+    pipeline=VanillaPipelineConfig(
+        datamanager=VanillaDataManagerConfig(
+            dataparser=IMLDataParserConfig(),
+            train_num_rays_per_batch=4096,
+            eval_num_rays_per_batch=4096,
+            camera_optimizer=CameraOptimizerConfig(
+                mode="SO3xR3", optimizer=AdamOptimizerConfig(lr=6e-4, eps=1e-8, weight_decay=1e-2)
+            ),
+        ),
+        model=NerfactoModelConfig(eval_num_rays_per_chunk=1 << 15),
+    ),
+    optimizers={
+        "proposal_networks": {
+            "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            "scheduler": MultiStepSchedulerConfig(max_steps=30000),
+        },
+        "fields": {
+            # "optimizer": AdamOptimizerConfig(lr=1e-2, eps=1e-15),
+            # "scheduler": MultiStepSchedulerConfig(max_steps=300000),
+            "optimizer": AdamOptimizerConfig(lr=5e-4, eps=1e-15),
+            "scheduler": NeuSSchedulerConfig(warm_up_end=500, learning_rate_alpha=0.05, max_steps=30000),
+        },
+    },
+    viewer=ViewerConfig(num_rays_per_chunk=1 << 15),
+    vis="viewer",
+)
 
 method_configs["neus-facto"] = Config(
     method_name="neus-facto",
