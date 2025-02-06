@@ -516,9 +516,10 @@ class SurfaceModel(Model):
             # semantic loss
             if "semantics" in batch and self.config.semantic_loss_mult > 0.0:
                 label = self.semantics_output2model[batch["semantics"].long()].to(self.device)
-                second_label = self.semantics_output2model[batch["second_semantics"].long()].to(self.device)
+                
                 semantics_pred = outputs["semantics"]
                 if "second_semantics" in batch:
+                    second_label = self.semantics_output2model[batch["second_semantics"].long()].to(self.device)
                     loss_dict["semantic_loss"] = (
                         (batch['prob_second_class'] * self.aux_semantic_loss(semantics_pred, second_label) + 
                             batch['prob_first_class'] * self.aux_semantic_loss(semantics_pred, label) ).mean() * self.config.semantic_loss_mult
